@@ -87,6 +87,9 @@ function formatList(operations: readonly ExternalAssetOperation[]): string {
     lines.push(`- ${operation.assetId} [${operation.category}] ${operation.description}`);
     lines.push(`  source: ${operation.sourceStatus}`);
     lines.push(`  sparse cache: ${operation.cache} (${operation.state})`);
+    if (operation.recovery !== undefined) {
+      lines.push(`  recovery: ${operation.recovery}`);
+    }
     lines.push(`  selected packages: ${operation.selectedPackages.length}`);
     for (const selectedPackage of operation.selectedPackages) {
       lines.push(
@@ -111,7 +114,10 @@ function formatUpdate(
         lines.push(`  command: ${command.program} ${command.args.join(" ")}`);
       }
     } else {
-      lines.push("  command: none (existing cache is not a Git checkout)");
+      lines.push("  command: none (cache conflict)");
+    }
+    if (operation.recovery !== undefined) {
+      lines.push(`  recovery: ${operation.recovery}`);
     }
     for (const selectedPackage of operation.selectedPackages) {
       lines.push(
@@ -160,13 +166,14 @@ export async function runExternalCommand(
         planDependencies,
       );
       const output = operations.map(
-        ({ assetId, category, description, sourceStatus, cache, state, selectedPackages }) => ({
+        ({ assetId, category, description, sourceStatus, cache, state, recovery, selectedPackages }) => ({
           id: assetId,
           category,
           description,
           sourceStatus,
           cache,
           cacheState: state,
+          recovery,
           selectedPackageCount: selectedPackages.length,
           selectedPackages: selectedPackages.map(
             ({ id, sourcePath, destination, state: packageState }) => ({

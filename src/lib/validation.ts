@@ -85,6 +85,7 @@ export function isSafeExternalAssetSource(source: unknown): source is string {
     typeof source !== "string" ||
     source.length === 0 ||
     source.trim() !== source ||
+    terminalControlCharacter.test(source) ||
     source.startsWith("-")
   ) {
     return false;

@@ -88,10 +88,6 @@ function expectedManagedCacheUpdateCommands(
     },
     {
       program: "git",
-      args: ["-c", `core.hooksPath=${devNull}`, "-C", cachePath, "pull", "--ff-only", "origin"],
-    },
-    {
-      program: "git",
       args: [
         "-c",
         `core.hooksPath=${devNull}`,
@@ -99,9 +95,13 @@ function expectedManagedCacheUpdateCommands(
         cachePath,
         "sparse-checkout",
         "set",
-        "--cone",
-        ...sourcePaths,
+        "--no-cone",
+        ...sourcePaths.map((sourcePath) => `/${sourcePath}/**`),
       ],
+    },
+    {
+      program: "git",
+      args: ["-c", `core.hooksPath=${devNull}`, "-C", cachePath, "pull", "--ff-only", "origin"],
     },
     {
       program: "git",
@@ -292,9 +292,9 @@ test("external update defaults to a sparse cache plan and runs no commands", asy
               ".saber/cache/saber-v1/superpowers",
               "sparse-checkout",
               "set",
-              "--cone",
-              "skills/brainstorming",
-              "skills/writing-plans",
+              "--no-cone",
+              "/skills/brainstorming/**",
+              "/skills/writing-plans/**",
             ],
           },
           {
@@ -378,14 +378,23 @@ test("an unmarked Git cache is a conflict and is never pulled or materialized", 
     assert.equal(operations[0]?.state, "conflict");
     assert.equal(operations[0]?.mode, "conflict");
     assert.deepEqual(operations[0]?.commands, []);
-    await executeExternalAssetUpdates(root, externalAssets, operations, {
-      runner: recordingRunner(commands),
-    });
+    assert.match(operations[0]?.recovery ?? "", /remove.*re-run external update/u);
+    await assert.rejects(
+      () =>
+        executeExternalAssetUpdates(root, externalAssets, operations, {
+          runner: recordingRunner(commands),
+        }),
+      (error: unknown) =>
+        error instanceof SaberError && /cache conflict.*remove.*re-run external update/u.test(error.message),
+    );
     assert.deepEqual(commands, []);
     await assert.rejects(
       access(join(root, ".saber/external/saber-v1/skills/superpowers/brainstorming/SKILL.md")),
       { code: "ENOENT" },
     );
+    await assert.rejects(access(join(root, ".saber/external/saber-v1/manifest.json")), {
+      code: "ENOENT",
+    });
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -545,6 +554,118 @@ test("a selected package cannot be sourced through a cache symlink", async () =>
   }
 });
 
+test("a cache with a symlink in its Git control area is a conflict and runs no Git command", async () => {
+  const root = await temporaryRepository("saber-external-git-symlink-");
+  const outside = await temporaryRepository("saber-external-git-symlink-outside-");
+  const commands: { program: string; args: readonly string[] }[] = [];
+  const cachePath = join(root, ".saber/cache/saber-v1/superpowers");
+  const externalAssets = registry([asset()]);
+
+  try {
+    await mkdir(join(cachePath, ".git"), { recursive: true });
+    await writeManagedCacheMarker(cachePath);
+    await writeCachedSkillPackage(cachePath, "skills/brainstorming");
+    await symlink(outside, join(cachePath, ".git/objects"), "dir");
+
+    const operations = await planExternalAssetUpdates(root, externalAssets);
+
+    assert.equal(operations[0]?.state, "conflict");
+    assert.equal(operations[0]?.mode, "conflict");
+    assert.deepEqual(operations[0]?.commands, []);
+    await assert.rejects(
+      () =>
+        executeExternalAssetUpdates(root, externalAssets, operations, {
+          runner: recordingRunner(commands),
+        }),
+      (error: unknown) =>
+        error instanceof SaberError && /cache conflict.*remove.*re-run external update/u.test(error.message),
+    );
+    assert.deepEqual(commands, []);
+  } finally {
+    await Promise.all([
+      rm(root, { recursive: true, force: true }),
+      rm(outside, { recursive: true, force: true }),
+    ]);
+  }
+});
+
+test("a Git control-area symlink introduced between commands blocks the next Git command", async () => {
+  const root = await temporaryRepository("saber-external-git-symlink-race-");
+  const outside = await temporaryRepository("saber-external-git-symlink-race-outside-");
+  const commands: { program: string; args: readonly string[] }[] = [];
+  const cachePath = join(root, ".saber/cache/saber-v1/superpowers");
+  const externalAssets = registry([asset()]);
+
+  try {
+    await mkdir(join(cachePath, ".git"), { recursive: true });
+    await writeManagedCacheMarker(cachePath);
+    await writeCachedSkillPackage(cachePath, "skills/brainstorming");
+    const operations = await planExternalAssetUpdates(root, externalAssets);
+
+    await assert.rejects(
+      () =>
+        executeExternalAssetUpdates(root, externalAssets, operations, {
+          runner: recordingRunner(commands, async (command) => {
+            if (command.args.includes("remote")) {
+              await symlink(outside, join(cachePath, ".git/objects"), "dir");
+            }
+          }),
+        }),
+      (error: unknown) =>
+        error instanceof SaberError && /Git control area.*re-clone/u.test(error.message),
+    );
+    assert.equal(commands.length, 1);
+    assert.ok(commands[0]?.args.includes("remote"));
+  } finally {
+    await Promise.all([
+      rm(root, { recursive: true, force: true }),
+      rm(outside, { recursive: true, force: true }),
+    ]);
+  }
+});
+
+test("a nested symlink in a selected source subtree is rejected before materialization", async () => {
+  const root = await temporaryRepository("saber-external-source-tree-symlink-");
+  const outside = await temporaryRepository("saber-external-source-tree-symlink-outside-");
+  const commands: { program: string; args: readonly string[] }[] = [];
+  const cachePath = join(root, ".saber/cache/saber-v1/superpowers");
+  const externalAssets = registry([asset()]);
+
+  try {
+    await mkdir(join(cachePath, ".git"), { recursive: true });
+    await writeManagedCacheMarker(cachePath);
+    await writeCachedSkillPackage(cachePath, "skills/brainstorming");
+    await symlink(
+      outside,
+      join(cachePath, "skills/brainstorming/references/untrusted-link"),
+      "dir",
+    );
+    const operations = await planExternalAssetUpdates(root, externalAssets);
+
+    await assert.rejects(
+      () =>
+        executeExternalAssetUpdates(root, externalAssets, operations, {
+          runner: recordingRunner(commands),
+        }),
+      (error: unknown) =>
+        error instanceof SaberError && /selected package source tree contains an unsafe entry/u.test(error.message),
+    );
+    assert.deepEqual(
+      commands,
+      expectedManagedCacheUpdateCommands(
+        join(await realpath(root), ".saber/cache/saber-v1/superpowers"),
+        ["skills/brainstorming"],
+      ),
+    );
+    await assert.rejects(access(join(root, ".saber/external")), { code: "ENOENT" });
+  } finally {
+    await Promise.all([
+      rm(root, { recursive: true, force: true }),
+      rm(outside, { recursive: true, force: true }),
+    ]);
+  }
+});
+
 test("an unmanaged external manifest is refused before any update side effect", async () => {
   const root = await temporaryRepository("saber-external-unmanaged-manifest-");
   const commands: { program: string; args: readonly string[] }[] = [];
@@ -647,8 +768,8 @@ test("confirmed update sparse-clones only the selected asset and materializes on
           join(await realpath(root), ".saber/cache/saber-v1/superpowers"),
           "sparse-checkout",
           "set",
-          "--cone",
-          "skills/brainstorming",
+          "--no-cone",
+          "/skills/brainstorming/**",
         ],
       },
       {
@@ -755,6 +876,8 @@ test("existing sparse Git cache plans an origin-pinned ff-only pull and material
     await mkdir(join(cachePath, ".git"), { recursive: true });
     await writeManagedCacheMarker(cachePath);
     await writeCachedSkillPackage(cachePath, "skills/brainstorming");
+    await writeFile(join(cachePath, "CLAUDE.md"), "# Unselected root file\n", "utf8");
+    await symlink("CLAUDE.md", join(cachePath, "AGENTS.md"), "file");
     const operations = await planExternalAssetUpdates(root, externalAssets);
 
     assert.equal(operations[0]?.mode, "pull");
@@ -779,6 +902,10 @@ test("existing sparse Git cache plans an origin-pinned ff-only pull and material
         "utf8",
       ),
       "# Selected skill\n",
+    );
+    await assert.rejects(
+      access(join(root, ".saber/external/saber-v1/skills/superpowers/AGENTS.md")),
+      { code: "ENOENT" },
     );
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -1026,6 +1153,38 @@ test("external asset planning rejects descriptions that could alter terminal out
       (error: unknown) =>
         error instanceof SaberError && /description must be a single safe line/u.test(error.message),
     );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("external updates reject control characters in Git sources before any clone argv is constructed", async () => {
+  const root = await temporaryRepository("saber-external-source-controls-");
+
+  try {
+    for (const source of [
+      "https://github.com/example/superpowers.git\n--upload-pack=evil",
+      "https://github.com/example/superpowers.git\r--upload-pack=evil",
+      "https://github.com/example/\u001bsuperpowers.git",
+    ]) {
+      const commands: { program: string; args: readonly string[] }[] = [];
+      const result = await runCli(
+        ["external", "update", "superpowers", "--apply", "--confirm", "--json"],
+        {
+          cwd: root,
+          dependencies: {
+            externalCommand: {
+              loadConfig: async () => configWith(registry([asset({ source })])),
+              runner: recordingRunner(commands),
+            },
+          },
+        },
+      );
+
+      assert.equal(result.exitCode, 2);
+      assert.match(result.stderr, /source must be a safe Git remote/u);
+      assert.deepEqual(commands, []);
+    }
   } finally {
     await rm(root, { recursive: true, force: true });
   }

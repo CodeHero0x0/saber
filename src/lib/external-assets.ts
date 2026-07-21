@@ -69,6 +69,8 @@ export type ExternalAssetOperation = {
   state: ExternalAssetState;
   mode: ExternalAssetUpdateMode;
   commands: readonly PlannedExternalCommand[];
+  /** Human action required when a managed cache cannot be safely updated. */
+  recovery?: string;
   selectedPackages: readonly SelectedExternalPackageOperation[];
 };
 
@@ -192,6 +194,10 @@ function externalAreaName(asset: ExternalAsset): "skills" | "mcp" {
 
 function cacheRelativePath(asset: ExternalAsset): string {
   return `${cacheRootRelativePath}/${asset.id}`;
+}
+
+function cacheConflictRecovery(asset: ExternalAsset): string {
+  return `Review ${cacheRelativePath(asset)}; Saber will not overwrite it. If it is safe to discard, remove it and re-run external update.`;
 }
 
 function externalAreaRelativePath(asset: ExternalAsset): string {
@@ -415,6 +421,76 @@ async function writeManagedCacheMarker(
   await fileSystem.writeFile(markerPath, cacheMarkerText(asset));
 }
 
+/**
+ * A Git control area and a selected package tree are separate trust boundaries.
+ * This deliberately checks only those managed/selected trees, not arbitrary
+ * upstream checkout files that are outside Saber’s materialization scope.
+ */
+async function isRegularDirectoryTreeWithoutUnsafeEntries(
+  directoryPath: string,
+  fileSystem: ExternalAssetFileSystem,
+): Promise<boolean> {
+  try {
+    const directory = await lstatIfPresent(fileSystem, directoryPath);
+    return (
+      directory !== undefined &&
+      directory.isDirectory() &&
+      !directory.isSymbolicLink() &&
+      !(await containsUnsafeFilesystemEntry(directoryPath, fileSystem))
+    );
+  } catch {
+    // An unreadable or concurrently modified managed tree cannot be proven
+    // safe, so callers must treat it as a conflict rather than proceeding.
+    return false;
+  }
+}
+
+async function assertCacheReadyForGitCommand(
+  repositoryRoot: string,
+  asset: ExternalAsset,
+  paths: AssetPaths,
+  requireManagedMarker: boolean,
+  fileSystem: ExternalAssetFileSystem,
+): Promise<void> {
+  await assertAssetPathsHaveNoSymbolicLinks(repositoryRoot, asset, fileSystem);
+  const cache = await lstatIfPresent(fileSystem, paths.cachePath);
+  if (cache === undefined || !cache.isDirectory() || cache.isSymbolicLink()) {
+    throw new SaberError("external cache is unavailable; remove the managed cache and re-clone", 1);
+  }
+
+  const markerPath = join(paths.cachePath, generatedCacheMarker);
+  const marker = await lstatIfPresent(fileSystem, markerPath);
+  if (
+    marker !== undefined &&
+    (!marker.isFile() || marker.isSymbolicLink())
+  ) {
+    throw new SaberError("external cache marker is unsafe; remove the managed cache and re-clone", 1);
+  }
+  if (requireManagedMarker) {
+    let markerText: string | undefined;
+    try {
+      markerText = marker === undefined ? undefined : await fileSystem.readFile(markerPath);
+    } catch {
+      markerText = undefined;
+    }
+    if (markerText === undefined || !cacheMarkerMatches(markerText, asset)) {
+      throw new SaberError("external cache marker is unsafe; remove the managed cache and re-clone", 1);
+    }
+  }
+
+  if (
+    !(await isRegularDirectoryTreeWithoutUnsafeEntries(
+      join(paths.cachePath, ".git"),
+      fileSystem,
+    ))
+  ) {
+    throw new SaberError(
+      "external cache Git control area is unsafe; remove the managed cache and re-clone",
+      1,
+    );
+  }
+}
+
 async function inspectCache(
   asset: ExternalAsset,
   paths: AssetPaths,
@@ -437,6 +513,9 @@ async function inspectCache(
   if (!gitMetadata?.isDirectory()) {
     return "conflict";
   }
+  if (!(await isRegularDirectoryTreeWithoutUnsafeEntries(join(paths.cachePath, ".git"), fileSystem))) {
+    return "conflict";
+  }
 
   const markerPath = join(paths.cachePath, generatedCacheMarker);
   const marker = await lstatIfPresent(fileSystem, markerPath);
@@ -444,9 +523,13 @@ async function inspectCache(
     return "conflict";
   }
 
-  return cacheMarkerMatches(await fileSystem.readFile(markerPath), asset)
-    ? "git-checkout"
-    : "conflict";
+  try {
+    return cacheMarkerMatches(await fileSystem.readFile(markerPath), asset)
+      ? "git-checkout"
+      : "conflict";
+  } catch {
+    return "conflict";
+  }
 }
 
 function markerFor(
@@ -596,6 +679,11 @@ function cloneCommand(source: string, cachePath: string): PlannedExternalCommand
   };
 }
 
+/** Compile validated source paths into anchored, recursive non-cone patterns. */
+function sparseCheckoutPattern(sourcePath: string): string {
+  return `/${sourcePath}/**`;
+}
+
 function sparseCheckoutCommand(asset: ExternalAsset, cachePath: string): PlannedExternalCommand {
   return {
     program: "git",
@@ -606,8 +694,8 @@ function sparseCheckoutCommand(asset: ExternalAsset, cachePath: string): Planned
       cachePath,
       "sparse-checkout",
       "set",
-      "--cone",
-      ...asset.packages.map((selectedPackage) => selectedPackage.sourcePath),
+      "--no-cone",
+      ...asset.packages.map((selectedPackage) => sparseCheckoutPattern(selectedPackage.sourcePath)),
     ],
   };
 }
@@ -654,8 +742,8 @@ function createCommands(
 
   return [
     verifyOriginCommand(cachePath),
-    pullCommand(cachePath),
     sparseCheckoutCommand(asset, cachePath),
+    pullCommand(cachePath),
     revisionCommand(cachePath),
   ];
 }
@@ -718,7 +806,12 @@ export async function planExternalAssetUpdates(
     } else if (state === "git-checkout") {
       operations.push({ ...base, mode: "pull", commands: createPreviewCommands(asset, "pull") });
     } else {
-      operations.push({ ...base, mode: "conflict", commands: [] });
+      operations.push({
+        ...base,
+        mode: "conflict",
+        commands: [],
+        recovery: cacheConflictRecovery(asset),
+      });
     }
   }
 
@@ -740,11 +833,21 @@ async function runGitCommand(command: PlannedExternalCommand): Promise<CommandRe
 }
 
 async function assertCacheOrigin(
+  repositoryRoot: string,
   asset: ExternalAsset,
-  cachePath: string,
+  paths: AssetPaths,
+  requireManagedMarker: boolean,
+  fileSystem: ExternalAssetFileSystem,
   runner: CommandRunner,
 ): Promise<void> {
-  const originResult = await runner(verifyOriginCommand(cachePath));
+  await assertCacheReadyForGitCommand(
+    repositoryRoot,
+    asset,
+    paths,
+    requireManagedMarker,
+    fileSystem,
+  );
+  const originResult = await runner(verifyOriginCommand(paths.cachePath));
   if (originResult.exitCode !== 0 || originResult.stdout?.trim() !== asset.source) {
     throw new SaberError("external cache origin does not match configured source", 1);
   }
@@ -802,6 +905,7 @@ async function validatePackageSource(
   if (source === undefined || !source.isDirectory()) {
     throw new SaberError("selected package was not found in the sparse cache", 1);
   }
+  await assertSelectedPackageSourceTreeIsSafe(sourcePath, fileSystem);
 
   if (asset.category === "skill-collection") {
     const skillFile = await lstatIfPresent(fileSystem, join(sourcePath, "SKILL.md"));
@@ -811,6 +915,15 @@ async function validatePackageSource(
   }
 
   return sourcePath;
+}
+
+async function assertSelectedPackageSourceTreeIsSafe(
+  sourcePath: string,
+  fileSystem: ExternalAssetFileSystem,
+): Promise<void> {
+  if (!(await isRegularDirectoryTreeWithoutUnsafeEntries(sourcePath, fileSystem))) {
+    throw new SaberError("selected package source tree contains an unsafe entry", 1);
+  }
 }
 
 function isSafeEntryName(name: string): boolean {
@@ -1048,6 +1161,10 @@ async function materializePackage(
   sourcePath: string,
   fileSystem: ExternalAssetFileSystem,
 ): Promise<void> {
+  // Source validation happened after sparse checkout; repeat it at the
+  // materialization boundary so a later local mutation cannot move links into
+  // a staged package tree.
+  await assertSelectedPackageSourceTreeIsSafe(sourcePath, fileSystem);
   const currentState = await inspectMaterializedPackage(
     repositoryRoot,
     asset,
@@ -1307,6 +1424,16 @@ export async function executeExternalAssetUpdates(
 ): Promise<void> {
   const fileSystem = dependencies.fileSystem ?? nodeFileSystem;
   const runner = dependencies.runner ?? runGitCommand;
+  const conflictedOperation = operations.find((operation) => operation.mode === "conflict");
+  if (conflictedOperation !== undefined) {
+    throw new SaberError(
+      `external asset ${conflictedOperation.assetId} has a cache conflict; ${
+        conflictedOperation.recovery ??
+        "Review the managed cache; do not overwrite it. If it is safe to discard, remove it and re-run external update."
+      }`,
+      1,
+    );
+  }
   // Reject a human-owned or malformed manifest before Git or filesystem update
   // side effects. The writer performs the same check again immediately before
   // its atomic replacement.
@@ -1341,17 +1468,29 @@ export async function executeExternalAssetUpdates(
     }
 
     if (operation.mode === "clone") {
+      // The cache has just been proven missing. Recheck immediately before the
+      // only Git command that creates it, then inspect the new control area
+      // before every subsequent command.
+      await assertAssetPathsHaveNoSymbolicLinks(repositoryRoot, asset, fileSystem);
+      if ((await inspectCache(asset, paths, fileSystem)) !== "missing") {
+        throw new SaberError("external asset state changed before update", 1);
+      }
       await runExternalAssetUpdateCommand(asset, cloneCommand(asset.source, paths.cachePath), runner);
-      await assertCacheOrigin(asset, paths.cachePath, runner);
+      await assertCacheOrigin(repositoryRoot, asset, paths, false, fileSystem, runner);
+      await assertCacheReadyForGitCommand(repositoryRoot, asset, paths, false, fileSystem);
       await runExternalAssetUpdateCommand(asset, sparseCheckoutCommand(asset, paths.cachePath), runner);
     } else {
-      await assertCacheOrigin(asset, paths.cachePath, runner);
-      await runExternalAssetUpdateCommand(asset, pullCommand(paths.cachePath), runner);
+      await assertCacheOrigin(repositoryRoot, asset, paths, true, fileSystem, runner);
+      await assertCacheReadyForGitCommand(repositoryRoot, asset, paths, true, fileSystem);
       await runExternalAssetUpdateCommand(asset, sparseCheckoutCommand(asset, paths.cachePath), runner);
+      await assertCacheReadyForGitCommand(repositoryRoot, asset, paths, true, fileSystem);
+      await runExternalAssetUpdateCommand(asset, pullCommand(paths.cachePath), runner);
     }
     if (operation.mode === "clone") {
+      await assertCacheReadyForGitCommand(repositoryRoot, asset, paths, false, fileSystem);
       await writeManagedCacheMarker(repositoryRoot, asset, paths, fileSystem);
     }
+    await assertCacheReadyForGitCommand(repositoryRoot, asset, paths, true, fileSystem);
     const revisionResult = await runner(revisionCommand(paths.cachePath));
     revisions.set(asset.id, revisionResult.exitCode === 0 ? normalizeRevision(revisionResult) : null);
 
