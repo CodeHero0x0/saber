@@ -23,6 +23,10 @@ import {
   runInitCommand,
   type InitCommandDependencies,
 } from "./commands/init.js";
+import {
+  runWorkitemCommand,
+  type WorkitemCommandDependencies,
+} from "./commands/workitem.js";
 import { SaberError } from "./lib/errors.js";
 
 export type CliResult = {
@@ -40,6 +44,10 @@ Commands:
   saber init [--apply --confirm] [--json]
   saber external list [--json]
   saber external update [id] [--apply --confirm] [--json]
+  saber workitem create <JIRA-KEY> --jira-url <url> --fingerprint <hash> --project <name> [--project <name>] [--json]
+  saber workitem handoff <JIRA-KEY> --role <ba|dev|qa> --summary <text> --risk <text> --next <text> [--json]
+  saber workitem drift <JIRA-KEY> --fingerprint <hash> [--json]
+  saber workitem status <JIRA-KEY> [--json]
 `;
 
 export type CliDependencies = {
@@ -48,6 +56,7 @@ export type CliDependencies = {
   doctorCommand?: DoctorCommandDependencies;
   statusCommand?: StatusCommandDependencies;
   initCommand?: InitCommandDependencies;
+  workitemCommand?: WorkitemCommandDependencies;
 };
 
 export async function runCli(
@@ -95,6 +104,13 @@ export async function runCli(
     return runExternalCommand(argv.slice(1), {
       cwd,
       dependencies: dependencies?.externalCommand,
+    });
+  }
+
+  if (command === "workitem") {
+    return runWorkitemCommand(argv.slice(1), {
+      cwd,
+      dependencies: dependencies?.workitemCommand,
     });
   }
 
