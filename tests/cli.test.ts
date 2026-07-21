@@ -15,9 +15,9 @@ type ProcessResult = {
 const projectRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const tsxBinary = join(projectRoot, "node_modules", ".bin", "tsx");
 
-function executeCli(argv: readonly string[]): Promise<ProcessResult> {
+function executeTsx(argv: readonly string[]): Promise<ProcessResult> {
   return new Promise((resolve, reject) => {
-    const child = spawn(tsxBinary, ["src/cli.ts", ...argv], {
+    const child = spawn(tsxBinary, argv, {
       cwd: projectRoot,
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -35,6 +35,10 @@ function executeCli(argv: readonly string[]): Promise<ProcessResult> {
       });
     });
   });
+}
+
+function executeCli(argv: readonly string[]): Promise<ProcessResult> {
+  return executeTsx(["src/cli.ts", ...argv]);
 }
 
 test("runCli shows help when no command is supplied", async () => {
@@ -60,7 +64,7 @@ test("runCli rejects an unknown command", async () => {
 
   assert.equal(result.exitCode, 2);
   assert.equal(result.stdout, "");
-  assert.equal(result.stderr, "Unknown command: unknown");
+  assert.equal(result.stderr, "Unknown command: unknown\n");
 });
 
 for (const command of ["validate", "doctor", "status"]) {
@@ -74,6 +78,31 @@ for (const command of ["validate", "doctor", "status"]) {
     });
   });
 }
+
+for (const command of ["validate", "doctor", "status"]) {
+  test(`direct CLI execution writes the ${command} placeholder`, async () => {
+    const result = await executeCli([command]);
+
+    assert.deepEqual(result, {
+      exitCode: 0,
+      stdout: `${command} is not implemented yet\n`,
+      stderr: "",
+    });
+  });
+}
+
+test("importing the CLI module does not write output or change process.exitCode", async () => {
+  const result = await executeTsx([
+    "--eval",
+    'process.exitCode = 17; import("./src/cli.ts").then(() => process.stdout.write(String(process.exitCode)));',
+  ]);
+
+  assert.deepEqual(result, {
+    exitCode: 17,
+    stdout: "17",
+    stderr: "",
+  });
+});
 
 test("direct CLI execution writes help to stdout", async () => {
   const result = await executeCli([]);
@@ -89,6 +118,6 @@ test("direct CLI execution writes an unknown-command error only to stderr", asyn
   assert.deepEqual(result, {
     exitCode: 2,
     stdout: "",
-    stderr: "Unknown command: unknown",
+    stderr: "Unknown command: unknown\n",
   });
 });

@@ -38,7 +38,7 @@ export async function runCli(
   }
 
   const error = new SaberError(`Unknown command: ${command}`, 2);
-  return { exitCode: error.exitCode, stdout: "", stderr: error.message };
+  return { exitCode: error.exitCode, stdout: "", stderr: `${error.message}\n` };
 }
 
 const entrypoint = process.argv[1];
