@@ -20,6 +20,7 @@ import { loadRepositoryConfig } from "../src/lib/config.js";
 import { SaberError } from "../src/lib/errors.js";
 import {
   executeExternalAssetUpdates,
+  gitCommandRequiresStdout,
   planExternalAssetUpdates,
   redactExternalAssetSource,
   type CommandRunner,
@@ -190,6 +191,7 @@ test("checked-in external catalog lists the deliberately selected skill packages
     assets: Array<{
       id: string;
       category: string;
+      source: string;
       selectedPackageCount: number;
       selectedPackages: Array<{ id: string; sourcePath: string }>;
     }>;
@@ -199,6 +201,7 @@ test("checked-in external catalog lists the deliberately selected skill packages
     output.assets.map((assetRecord) => ({
       id: assetRecord.id,
       category: assetRecord.category,
+      source: assetRecord.source,
       selectedPackageCount: assetRecord.selectedPackageCount,
       selectedPackages: assetRecord.selectedPackages.map(({ id, sourcePath }) => ({
         id,
@@ -209,6 +212,7 @@ test("checked-in external catalog lists the deliberately selected skill packages
       {
         id: "superpowers",
         category: "skill-collection",
+        source: "https://github.com/obra/superpowers.git",
         selectedPackageCount: 6,
         selectedPackages: [
           { id: "brainstorming", sourcePath: "skills/brainstorming" },
@@ -225,6 +229,7 @@ test("checked-in external catalog lists the deliberately selected skill packages
       {
         id: "openspec",
         category: "skill-collection",
+        source: "https://github.com/Fission-AI/OpenSpec.git",
         selectedPackageCount: 4,
         selectedPackages: [
           { id: "openspec-explore", sourcePath: "skills/openspec-explore" },
@@ -235,6 +240,33 @@ test("checked-in external catalog lists the deliberately selected skill packages
       },
     ],
   );
+});
+
+test("external list exposes only a redacted source in text and JSON", async () => {
+  const root = await temporaryRepository("saber-external-list-source-");
+  const externalAssets = registry([
+    asset({ source: "personal-user@git.example.test:team/superpowers.git" }),
+  ]);
+
+  try {
+    const dependencies = {
+      externalCommand: { loadConfig: async () => configWith(externalAssets) },
+    };
+    const json = await runCli(["external", "list", "--json"], { cwd: root, dependencies });
+    const text = await runCli(["external", "list"], { cwd: root, dependencies });
+
+    assert.equal(json.exitCode, 0);
+    assert.equal(
+      (JSON.parse(json.stdout) as { assets: Array<{ source: string }> }).assets[0]?.source,
+      "ssh://git.example.test/team/superpowers.git",
+    );
+    assert.doesNotMatch(json.stdout, /personal-user@/u);
+    assert.equal(text.exitCode, 0);
+    assert.match(text.stdout, /source: ssh:\/\/git\.example\.test\/team\/superpowers\.git/u);
+    assert.doesNotMatch(text.stdout, /personal-user@/u);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("external update defaults to a sparse cache plan and runs no commands", async () => {
@@ -257,6 +289,7 @@ test("external update defaults to a sparse cache plan and runs no commands", asy
         assetId: "superpowers",
         category: "skill-collection",
         description: "团队可按需拉取的 Superpowers 技能集合。",
+        source: "https://github.com/example/superpowers.git",
         sourceStatus: "configured",
         cache: ".saber/cache/saber-v1/superpowers",
         state: "missing",
@@ -1157,7 +1190,7 @@ test("external asset planning rejects descriptions that could alter terminal out
   }
 });
 
-test("external updates reject control characters in Git sources before any clone argv is constructed", async () => {
+test("external updates reject unsafe Git sources before any clone argv is constructed", async () => {
   const root = await temporaryRepository("saber-external-source-controls-");
 
   try {
@@ -1168,6 +1201,8 @@ test("external updates reject control characters in Git sources before any clone
       "https://github.com/example/\u202esuperpowers.git",
       "https://github.com/example/\u2028superpowers.git",
       "https://github.com/example/\u2029superpowers.git",
+      "http://github.com/example/superpowers.git",
+      "git://github.com/example/superpowers.git",
     ]) {
       const commands: { program: string; args: readonly string[] }[] = [];
       const result = await runCli(
@@ -1192,7 +1227,7 @@ test("external updates reject control characters in Git sources before any clone
   }
 });
 
-test("external source validation keeps standard public HTTPS and SCP remotes", () => {
+test("external source validation permits HTTPS and SCP remotes but rejects insecure protocols", () => {
   assert.equal(
     isSafeExternalAssetSource("https://github.com/obra/superpowers.git"),
     true,
@@ -1200,6 +1235,39 @@ test("external source validation keeps standard public HTTPS and SCP remotes", (
   assert.equal(
     isSafeExternalAssetSource("git@github.com:obra/superpowers.git"),
     true,
+  );
+  assert.equal(isSafeExternalAssetSource("http://github.com/obra/superpowers.git"), false);
+  assert.equal(isSafeExternalAssetSource("git://github.com/obra/superpowers.git"), false);
+});
+
+test("only Git origin and revision queries request stdout capture", () => {
+  assert.equal(
+    gitCommandRequiresStdout({
+      program: "git",
+      args: ["-C", ".saber/cache/saber-v1/superpowers", "remote", "get-url", "origin"],
+    }),
+    true,
+  );
+  assert.equal(
+    gitCommandRequiresStdout({
+      program: "git",
+      args: ["-C", ".saber/cache/saber-v1/superpowers", "rev-parse", "HEAD"],
+    }),
+    true,
+  );
+  assert.equal(
+    gitCommandRequiresStdout({
+      program: "git",
+      args: ["clone", "--sparse", "https://github.com/example/superpowers.git", ".saber/cache"],
+    }),
+    false,
+  );
+  assert.equal(
+    gitCommandRequiresStdout({
+      program: "git",
+      args: ["-C", ".saber/cache", "pull", "--ff-only", "origin"],
+    }),
+    false,
   );
 });
 
@@ -1258,6 +1326,14 @@ test("configuration requires selected packages, safe source paths, and credentia
     source.replace(
       "source: https://github.com/obra/superpowers.git",
       "source: https://token:secret@example.test/superpowers.git",
+    ),
+    source.replace(
+      "source: https://github.com/obra/superpowers.git",
+      "source: http://github.com/obra/superpowers.git",
+    ),
+    source.replace(
+      "source: https://github.com/obra/superpowers.git",
+      "source: git://github.com/obra/superpowers.git",
     ),
     source.replace("sourcePath: skills/brainstorming", "sourcePath: ../all-skills"),
   ];

@@ -210,3 +210,37 @@ test("loadRepositoryConfig hard-limits the MVP forbidden risk policy to L3", asy
     await rm(temporaryDirectory, { recursive: true, force: true });
   }
 });
+
+test("loadRepositoryConfig rejects unknown keys in every schema mapping", async () => {
+  const temporaryDirectory = await mkdtemp(join(tmpdir(), "saber-unknown-config-key-"));
+
+  try {
+    const source = await readFile(join(projectRoot, "saber.yaml"), "utf8");
+    const invalidConfigs = [
+      `${source}token: ignored\n`,
+      source.replace("safety:\n", "safety:\n  token: ignored\n"),
+      source.replace("workspace:\n", "workspace:\n  token: ignored\n"),
+      source.replace("  tools:\n", "  tools:\n    token: ignored\n"),
+      source.replace("    - name: frontend\n", "    - token: ignored\n      name: frontend\n"),
+      source.replace("  - id: jira.read\n", "  - token: ignored\n    id: jira.read\n"),
+      source.replace("  - id: idea-mcp\n", "  - token: ignored\n    id: idea-mcp\n"),
+      source.replace("externalAssets:\n", "externalAssets:\n  token: ignored\n"),
+      source.replace("    - id: superpowers\n", "    - token: ignored\n      id: superpowers\n"),
+      source.replace(
+        "        - id: brainstorming\n",
+        "        - token: ignored\n          id: brainstorming\n",
+      ),
+    ];
+
+    for (const invalid of invalidConfigs) {
+      assert.notEqual(invalid, source);
+      await writeFile(join(temporaryDirectory, "saber.yaml"), invalid, "utf8");
+      await assert.rejects(
+        () => loadRepositoryConfig(temporaryDirectory),
+        (error: unknown) => error instanceof SaberError && /unknown key/.test(error.message),
+      );
+    }
+  } finally {
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
+});

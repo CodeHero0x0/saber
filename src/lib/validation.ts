@@ -16,7 +16,7 @@ const externalAssetCategories: readonly ExternalAssetCategory[] = [
   "mcp-server",
 ];
 const externalAssetId = /^[a-z][a-z0-9-]{0,63}$/u;
-const supportedGitProtocols = new Set(["https:", "http:", "ssh:", "git:"]);
+const supportedGitProtocols = new Set(["https:", "ssh:"]);
 const scpStyleGitRemote = /^[A-Za-z0-9._-]+@[A-Za-z0-9._-]+:[A-Za-z0-9._/:-]+$/u;
 const externalPackagePathSegment = /^[A-Za-z0-9][A-Za-z0-9._-]*$/u;
 // These characters can alter terminal rendering, conceal suffixes, or split a

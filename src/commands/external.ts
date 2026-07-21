@@ -85,7 +85,7 @@ function formatList(operations: readonly ExternalAssetOperation[]): string {
   const lines = ["External assets:"];
   for (const operation of operations) {
     lines.push(`- ${operation.assetId} [${operation.category}] ${operation.description}`);
-    lines.push(`  source: ${operation.sourceStatus}`);
+    lines.push(`  source: ${operation.source} (${operation.sourceStatus})`);
     lines.push(`  sparse cache: ${operation.cache} (${operation.state})`);
     if (operation.recovery !== undefined) {
       lines.push(`  recovery: ${operation.recovery}`);
@@ -109,6 +109,7 @@ function formatUpdate(
     lines.push(
       `- ${operation.assetId} [${operation.category}] ${operation.mode} (${operation.state})`,
     );
+    lines.push(`  source: ${operation.source} (${operation.sourceStatus})`);
     if (operation.commands.length > 0) {
       for (const command of operation.commands) {
         lines.push(`  command: ${command.program} ${command.args.join(" ")}`);
@@ -166,10 +167,21 @@ export async function runExternalCommand(
         planDependencies,
       );
       const output = operations.map(
-        ({ assetId, category, description, sourceStatus, cache, state, recovery, selectedPackages }) => ({
+        ({
+          assetId,
+          category,
+          description,
+          source,
+          sourceStatus,
+          cache,
+          state,
+          recovery,
+          selectedPackages,
+        }) => ({
           id: assetId,
           category,
           description,
+          source,
           sourceStatus,
           cache,
           cacheState: state,

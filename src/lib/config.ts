@@ -37,6 +37,19 @@ function requireRecord(value: unknown, location: string): Record<string, unknown
   return value;
 }
 
+/** Reject unrecognized fields so credentials and endpoint values cannot be silently ignored. */
+function assertKnownKeys(
+  record: Record<string, unknown>,
+  location: string,
+  knownKeys: readonly string[],
+): void {
+  for (const key of Object.keys(record)) {
+    if (!knownKeys.includes(key)) {
+      throw new SaberError(`${location} contains an unknown key`);
+    }
+  }
+}
+
 function requireString(value: unknown, location: string): string {
   if (typeof value !== "string" || value.length === 0) {
     throw new SaberError(`${location} must be a non-empty string`);
@@ -123,6 +136,7 @@ function parseYaml(text: string): unknown {
 
 function parseSaberConfig(record: Record<string, unknown>, schemaVersion: 1): SaberConfig {
   const safety = requireRecord(record.safety, "saber.yaml.safety");
+  assertKnownKeys(safety, "saber.yaml.safety", ["externalWrites", "forbiddenRiskLevels"]);
   const externalWrites = requireString(
     safety.externalWrites,
     "saber.yaml.safety.externalWrites",
@@ -158,6 +172,7 @@ function parseSaberConfig(record: Record<string, unknown>, schemaVersion: 1): Sa
 function parseProject(value: unknown, index: number): ProjectConfig {
   const location = `saber.yaml.workspace.projects[${index}]`;
   const record = requireRecord(value, location);
+  assertKnownKeys(record, location, ["name", "path", "repository", "capabilities"]);
   const project: ProjectConfig = {
     name: requireString(record.name, `${location}.name`),
     path: requireString(record.path, `${location}.path`),
@@ -177,7 +192,13 @@ function parseProject(value: unknown, index: number): ProjectConfig {
 
 function parseWorkspaceConfig(value: unknown, schemaVersion: 1): WorkspaceConfig {
   const record = requireRecord(value, "saber.yaml.workspace");
+  assertKnownKeys(record, "saber.yaml.workspace", ["tools", "projects"]);
   const toolsRecord = requireRecord(record.tools, "saber.yaml.workspace.tools");
+  assertKnownKeys(toolsRecord, "saber.yaml.workspace.tools", [
+    "default",
+    "supported",
+    "defaultCapabilities",
+  ]);
   const tools: WorkspaceConfig["tools"] = {
     default: parseToolName(toolsRecord.default, "saber.yaml.workspace.tools.default"),
   };
@@ -213,6 +234,7 @@ function parseWorkspaceConfig(value: unknown, schemaVersion: 1): WorkspaceConfig
 function parseCapability(value: unknown, index: number): Capability {
   const location = `saber.yaml.capabilities[${index}]`;
   const record = requireRecord(value, location);
+  assertKnownKeys(record, location, ["id", "risk", "kind", "connector"]);
   const kind = requireString(record.kind, `${location}.kind`);
 
   if (kind !== "read" && kind !== "action") {
@@ -244,6 +266,7 @@ function parseCapabilities(value: unknown): Capability[] {
 function parseConnector(value: unknown, index: number): ConnectorConfig {
   const location = `saber.yaml.connectors[${index}]`;
   const record = requireRecord(value, location);
+  assertKnownKeys(record, location, ["id", "kind", "requiredEnv", "provides"]);
 
   return {
     id: requireString(record.id, `${location}.id`),
@@ -264,6 +287,7 @@ function parseConnectors(value: unknown): ConnectorConfig[] {
 function parseExternalAsset(value: unknown, index: number): ExternalAsset {
   const location = `saber.yaml.externalAssets.assets[${index}]`;
   const record = requireRecord(value, location);
+  assertKnownKeys(record, location, ["id", "category", "description", "kind", "source", "packages"]);
   const kind = requireString(record.kind, `${location}.kind`);
 
   if (kind !== "git") {
@@ -310,6 +334,7 @@ function parseExternalAssetPackage(
 ): ExternalAssetPackage {
   const location = `saber.yaml.externalAssets.assets[${assetIndex}].packages[${packageIndex}]`;
   const record = requireRecord(value, location);
+  assertKnownKeys(record, location, ["id", "sourcePath"]);
   const id = requireString(record.id, `${location}.id`);
   const sourcePath = requireString(record.sourcePath, `${location}.sourcePath`);
 
@@ -331,6 +356,7 @@ function parseExternalAssetsConfig(
   schemaVersion: 1,
 ): ExternalAssetsConfig {
   const record = requireRecord(value, "saber.yaml.externalAssets");
+  assertKnownKeys(record, "saber.yaml.externalAssets", ["assets"]);
   if (!Array.isArray(record.assets)) {
     throw new SaberError("saber.yaml.externalAssets.assets must be a list");
   }
@@ -347,6 +373,15 @@ export async function loadRepositoryConfig(repositoryRoot: string): Promise<Repo
     parseYaml(await readTextWithinRoot(repositoryRoot, "saber.yaml")),
     "saber.yaml",
   );
+  assertKnownKeys(root, "saber.yaml", [
+    "schemaVersion",
+    "name",
+    "safety",
+    "workspace",
+    "capabilities",
+    "connectors",
+    "externalAssets",
+  ]);
   const schemaVersion = requireSchemaVersion(root);
 
   return {

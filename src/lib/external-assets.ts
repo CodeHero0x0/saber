@@ -40,6 +40,7 @@ const externalManifestOwner = "saber";
 const stagingDirectoryPrefix = ".saber-stage-";
 const backupDirectoryPrefix = ".saber-backup-";
 const manifestTemporaryFilenamePrefix = ".saber-manifest-";
+const maximumGitQueryStdoutBytes = 16 * 1024;
 
 export type ExternalAssetState = "missing" | "git-checkout" | "conflict";
 export type ExternalAssetUpdateMode = "clone" | "pull" | "conflict";
@@ -59,11 +60,13 @@ export type SelectedExternalPackageOperation = {
   mode: ExternalPackageUpdateMode;
 };
 
-/** A serializable preview that contains paths and redacted commands only. */
+/** A serializable preview that contains paths, source, and commands only in redacted form. */
 export type ExternalAssetOperation = {
   assetId: string;
   category: ExternalAsset["category"];
   description: string;
+  /** Configured source with URL userinfo, query, fragment, and SCP user redacted. */
+  source: string;
   sourceStatus: "configured";
   cache: string;
   state: ExternalAssetState;
@@ -796,6 +799,7 @@ export async function planExternalAssetUpdates(
       assetId: asset.id,
       category: asset.category,
       description: asset.description,
+      source: redactExternalAssetSource(asset.source),
       sourceStatus: "configured" as const,
       cache: cacheRelativePath(asset),
       state,
@@ -818,16 +822,45 @@ export async function planExternalAssetUpdates(
   return operations;
 }
 
+/** Only origin and revision queries need stdout for update safety checks. */
+export function gitCommandRequiresStdout(command: PlannedExternalCommand): boolean {
+  return (
+    command.args.includes("rev-parse") ||
+    (command.args.includes("remote") && command.args.includes("get-url"))
+  );
+}
+
 async function runGitCommand(command: PlannedExternalCommand): Promise<CommandResult> {
   return new Promise((resolve, reject) => {
+    const captureStdout = gitCommandRequiresStdout(command);
     const child = spawn(command.program, command.args, {
-      stdio: ["ignore", "pipe", "ignore"],
+      stdio: ["ignore", captureStdout ? "pipe" : "ignore", "ignore"],
     });
     const stdout: Buffer[] = [];
-    child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
+    let stdoutBytes = 0;
+    let stdoutExceededLimit = false;
+    if (captureStdout && child.stdout !== null) {
+      child.stdout.on("data", (chunk: Buffer) => {
+        const remaining = maximumGitQueryStdoutBytes - stdoutBytes;
+        if (remaining <= 0) {
+          stdoutExceededLimit = true;
+          return;
+        }
+        const retained = chunk.subarray(0, remaining);
+        // Copy the retained slice so a large pipe chunk is not kept alive.
+        stdout.push(Buffer.from(retained));
+        stdoutBytes += retained.length;
+        if (chunk.length > remaining) {
+          stdoutExceededLimit = true;
+        }
+      });
+    }
     child.once("error", () => reject(new SaberError("could not execute git", 1)));
     child.once("close", (code) => {
-      resolve({ exitCode: code ?? 1, stdout: Buffer.concat(stdout).toString("utf8") });
+      resolve({
+        exitCode: stdoutExceededLimit ? 1 : (code ?? 1),
+        stdout: captureStdout ? Buffer.concat(stdout).toString("utf8") : undefined,
+      });
     });
   });
 }
@@ -867,6 +900,7 @@ async function runExternalAssetUpdateCommand(
 function samePlan(expected: ExternalAssetOperation, current: ExternalAssetOperation): boolean {
   return (
     expected.assetId === current.assetId &&
+    expected.source === current.source &&
     expected.mode === current.mode &&
     expected.state === current.state &&
     expected.selectedPackages.length === current.selectedPackages.length &&
