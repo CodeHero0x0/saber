@@ -18,6 +18,7 @@ const externalAssetCategories: readonly ExternalAssetCategory[] = [
 const externalAssetId = /^[a-z][a-z0-9-]{0,63}$/u;
 const supportedGitProtocols = new Set(["https:", "ssh:"]);
 const scpStyleGitRemote = /^[A-Za-z0-9._-]+@[A-Za-z0-9._-]+:[A-Za-z0-9._/:-]+$/u;
+const sshUsername = /^[A-Za-z0-9._-]+$/u;
 const externalPackagePathSegment = /^[A-Za-z0-9][A-Za-z0-9._-]*$/u;
 // These characters can alter terminal rendering, conceal suffixes, or split a
 // displayed line. Reject them before a description is printed or a source is
@@ -69,7 +70,7 @@ export function isSafeExternalAssetPackagePath(value: unknown): value is string 
   return segments.every((segment) => externalPackagePathSegment.test(segment));
 }
 
-/** URL userinfo and query strings can hold tokens, so they are not allowed in Git sources. */
+/** HTTPS userinfo and URL secrets are never allowed; SSH may use a simple account name. */
 export function externalAssetSourceContainsSensitiveUrlParts(source: unknown): boolean {
   if (typeof source !== "string") {
     return true;
@@ -77,7 +78,12 @@ export function externalAssetSourceContainsSensitiveUrlParts(source: unknown): b
 
   try {
     const url = new URL(source);
-    return Boolean(url.username || url.password || url.search || url.hash);
+    return Boolean(
+      url.password ||
+        url.search ||
+        url.hash ||
+        (url.username && (url.protocol !== "ssh:" || !sshUsername.test(url.username))),
+    );
   } catch {
     return false;
   }

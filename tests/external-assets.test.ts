@@ -245,7 +245,7 @@ test("checked-in external catalog lists the deliberately selected skill packages
 test("external list exposes only a redacted source in text and JSON", async () => {
   const root = await temporaryRepository("saber-external-list-source-");
   const externalAssets = registry([
-    asset({ source: "personal-user@git.example.test:team/superpowers.git" }),
+    asset({ source: "ssh://git@git.example.test/team/superpowers.git" }),
   ]);
 
   try {
@@ -260,10 +260,10 @@ test("external list exposes only a redacted source in text and JSON", async () =
       (JSON.parse(json.stdout) as { assets: Array<{ source: string }> }).assets[0]?.source,
       "ssh://git.example.test/team/superpowers.git",
     );
-    assert.doesNotMatch(json.stdout, /personal-user@/u);
+    assert.doesNotMatch(json.stdout, /git@/u);
     assert.equal(text.exitCode, 0);
     assert.match(text.stdout, /source: ssh:\/\/git\.example\.test\/team\/superpowers\.git/u);
-    assert.doesNotMatch(text.stdout, /personal-user@/u);
+    assert.doesNotMatch(text.stdout, /git@/u);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -1203,6 +1203,9 @@ test("external updates reject unsafe Git sources before any clone argv is constr
       "https://github.com/example/\u2029superpowers.git",
       "http://github.com/example/superpowers.git",
       "git://github.com/example/superpowers.git",
+      "ssh://git:password@github.com/example/superpowers.git",
+      "ssh://git@github.com/example/superpowers.git?access=secret",
+      "ssh://git@github.com/example/superpowers.git#fragment",
     ]) {
       const commands: { program: string; args: readonly string[] }[] = [];
       const result = await runCli(
@@ -1236,8 +1239,29 @@ test("external source validation permits HTTPS and SCP remotes but rejects insec
     isSafeExternalAssetSource("git@github.com:obra/superpowers.git"),
     true,
   );
+  assert.equal(
+    isSafeExternalAssetSource("ssh://git@github.com/obra/superpowers.git"),
+    true,
+  );
   assert.equal(isSafeExternalAssetSource("http://github.com/obra/superpowers.git"), false);
   assert.equal(isSafeExternalAssetSource("git://github.com/obra/superpowers.git"), false);
+  assert.equal(
+    isSafeExternalAssetSource("ssh://git:password@github.com/obra/superpowers.git"),
+    false,
+  );
+  assert.equal(
+    isSafeExternalAssetSource("ssh://git@github.com/obra/superpowers.git?access=secret"),
+    false,
+  );
+  assert.equal(
+    isSafeExternalAssetSource("ssh://git@github.com/obra/superpowers.git#fragment"),
+    false,
+  );
+  assert.equal(
+    isSafeExternalAssetSource("ssh://git%20user@github.com/obra/superpowers.git"),
+    false,
+  );
+  assert.equal(isSafeExternalAssetSource("https://git@github.com/obra/superpowers.git"), false);
 });
 
 test("only Git origin and revision queries request stdout capture", () => {
@@ -1302,6 +1326,10 @@ test("external source previews redact URL authority userinfo", () => {
     redactExternalAssetSource("personal-user@git.example.test:team/asset.git"),
     "ssh://git.example.test/team/asset.git",
   );
+  assert.equal(
+    redactExternalAssetSource("ssh://git@git.example.test/team/asset.git"),
+    "ssh://git.example.test/team/asset.git",
+  );
 });
 
 test("external command rejects unknown flags, malformed syntax, and unknown asset ids", async () => {
@@ -1334,6 +1362,10 @@ test("configuration requires selected packages, safe source paths, and credentia
     source.replace(
       "source: https://github.com/obra/superpowers.git",
       "source: git://github.com/obra/superpowers.git",
+    ),
+    source.replace(
+      "source: https://github.com/obra/superpowers.git",
+      "source: ssh://git:password@github.com/obra/superpowers.git",
     ),
     source.replace("sourcePath: skills/brainstorming", "sourcePath: ../all-skills"),
   ];
