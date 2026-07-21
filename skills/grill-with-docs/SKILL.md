@@ -12,3 +12,8 @@ description: Use when a plan or technical decision must be challenged against au
 5. Produce a decision record with supported claims, unresolved gaps, citations, and the person who must decide any trade-off.
 
 Do not treat blog posts, generated text or a search snippet as authority when official documentation is available. If documentation conflicts or is unavailable, mark the claim uncertain and pause for a responsible human.
+
+## 可复用资产
+
+- 用[证据评级准则](references/evidence-rubric.md)判断来源权威性、版本适用性和引用完整性。
+- 用[带引用决策记录模板](templates/cited-decision-record.md)将主张、证据和未决差异交接给真人负责人。

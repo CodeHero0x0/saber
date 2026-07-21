@@ -45,19 +45,24 @@ function isUnsafeProjectPath(projectPath: string): boolean {
 
 function validateTools(input: RepositoryValidationInput, errors: string[]): void {
   const tools = input.workspace.tools;
+  const supportedTools = tools.supported ?? [];
 
   if (!isToolName(tools.default)) {
     errors.push(`unknown tool ${String(tools.default)}`);
   }
 
-  for (const tool of tools.supported ?? []) {
+  for (const tool of supportedTools) {
     if (!isToolName(tool)) {
       errors.push(`unknown tool ${String(tool)}`);
     }
   }
 
-  for (const duplicate of findDuplicateValues(tools.supported ?? [])) {
+  for (const duplicate of findDuplicateValues(supportedTools)) {
     errors.push(`duplicate supported tool ${duplicate}`);
+  }
+
+  if (supportedTools.length > 0 && !supportedTools.includes(tools.default)) {
+    errors.push(`default tool ${String(tools.default)} is not included in supported tools`);
   }
 }
 
@@ -77,7 +82,7 @@ function validateProjects(input: RepositoryValidationInput, errors: string[]): v
 
 function validateCapabilities(
   capabilities: readonly Capability[],
-  connectorIds: ReadonlySet<string>,
+  connectorsById: ReadonlyMap<string, RepositoryValidationInput["connectors"][number]>,
   errors: string[],
 ): void {
   for (const duplicate of findDuplicateValues(capabilities.map((capability) => capability.id))) {
@@ -91,16 +96,29 @@ function validateCapabilities(
       errors.push(`capability ${capability.id} uses forbidden risk level L3`);
     }
 
-    if (capability.connector !== undefined && !connectorIds.has(capability.connector)) {
-      errors.push(
-        `capability ${capability.id} references missing connector ${capability.connector}`,
-      );
+    if (capability.connector !== undefined) {
+      const connector = connectorsById.get(capability.connector);
+
+      if (connector === undefined) {
+        errors.push(
+          `capability ${capability.id} references missing connector ${capability.connector}`,
+        );
+      } else if (!connector.provides.includes(capability.id)) {
+        errors.push(
+          `capability ${capability.id} is not provided by connector ${capability.connector}`,
+        );
+      }
     }
   }
 }
 
 function validateConnectors(input: RepositoryValidationInput, errors: string[]): void {
-  const capabilityIds = new Set(input.capabilities.map((capability) => capability.id));
+  const capabilitiesById = new Map<string, Capability>();
+  for (const capability of input.capabilities) {
+    if (!capabilitiesById.has(capability.id)) {
+      capabilitiesById.set(capability.id, capability);
+    }
+  }
 
   for (const duplicate of findDuplicateValues(input.connectors.map((connector) => connector.id))) {
     errors.push(`duplicate connector id ${duplicate}`);
@@ -110,15 +128,28 @@ function validateConnectors(input: RepositoryValidationInput, errors: string[]):
     for (const duplicate of findDuplicateValues(connector.requiredEnv)) {
       errors.push(`connector ${connector.id} repeats environment variable ${duplicate}`);
     }
+    for (const duplicate of findDuplicateValues(connector.provides)) {
+      errors.push(`connector ${connector.id} repeats provided capability ${duplicate}`);
+    }
     for (const name of connector.requiredEnv) {
       if (!environmentVariableName.test(name)) {
         errors.push(`connector ${connector.id} has invalid environment variable name ${name}`);
       }
     }
 
-    for (const capabilityId of connector.provides) {
-      if (!capabilityIds.has(capabilityId)) {
+    for (const capabilityId of new Set(connector.provides)) {
+      const capability = capabilitiesById.get(capabilityId);
+
+      if (capability === undefined) {
         errors.push(`connector ${connector.id} provides unknown capability ${capabilityId}`);
+      } else if (capability.connector === undefined) {
+        errors.push(
+          `connector ${connector.id} provides connectorless capability ${capabilityId}`,
+        );
+      } else if (capability.connector !== connector.id) {
+        errors.push(
+          `connector ${connector.id} provides capability ${capabilityId} mapped to connector ${capability.connector}`,
+        );
       }
     }
   }
@@ -157,7 +188,12 @@ function validateCapabilityReferences(input: RepositoryValidationInput, errors: 
 /** Validate the references and safety invariants shared by all Saber commands. */
 export function validateRepositoryConfig(input: RepositoryValidationInput): string[] {
   const errors: string[] = [];
-  const connectorIds = new Set(input.connectors.map((connector) => connector.id));
+  const connectorsById = new Map<string, RepositoryValidationInput["connectors"][number]>();
+  for (const connector of input.connectors) {
+    if (!connectorsById.has(connector.id)) {
+      connectorsById.set(connector.id, connector);
+    }
+  }
 
   if (input.workspace.schemaVersion !== 1) {
     errors.push("workspace schemaVersion must be 1");
@@ -165,7 +201,7 @@ export function validateRepositoryConfig(input: RepositoryValidationInput): stri
 
   validateTools(input, errors);
   validateProjects(input, errors);
-  validateCapabilities(input.capabilities, connectorIds, errors);
+  validateCapabilities(input.capabilities, connectorsById, errors);
   validateConnectors(input, errors);
   validateCapabilityReferences(input, errors);
   validateExternalAssets(input, errors);

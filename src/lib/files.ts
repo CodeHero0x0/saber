@@ -1,5 +1,6 @@
+import { lstatSync, realpathSync } from "node:fs";
 import { readFile, realpath } from "node:fs/promises";
-import { isAbsolute, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 
 import { SaberError } from "./errors.js";
 
@@ -16,29 +17,71 @@ function isPlatformAbsolutePath(path: string): boolean {
   return isAbsolute(path) || /^[A-Za-z]:[\\/]/u.test(path) || path.startsWith("\\\\");
 }
 
+function isMissingPath(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    error.code === "ENOENT"
+  );
+}
+
+function nearestExistingAncestor(candidate: string): string {
+  let ancestor = candidate;
+
+  while (true) {
+    try {
+      lstatSync(ancestor);
+      return ancestor;
+    } catch (error: unknown) {
+      if (!isMissingPath(error)) {
+        throw error;
+      }
+
+      const parent = dirname(ancestor);
+      if (parent === ancestor) {
+        throw new SaberError(`could not find an existing ancestor for ${candidate}`);
+      }
+      ancestor = parent;
+    }
+  }
+}
+
 /**
- * Resolve a repository-owned path while refusing absolute paths and traversal
- * that would make a command read or write outside the selected Saber checkout.
+ * Resolve a repository-owned path for reads or future writes. Existing path
+ * components are canonicalized, so an escaping intermediate symlink is refused
+ * even when the leaf does not exist yet.
  */
 export function resolveWithinRoot(repositoryRoot: string, relativePath: string): string {
   if (isPlatformAbsolutePath(relativePath)) {
     throw new SaberError(`path escapes repository root: ${relativePath}`);
   }
 
-  const root = resolve(repositoryRoot);
-  const candidate = resolve(root, relativePath);
+  const lexicalRoot = resolve(repositoryRoot);
+  const lexicalCandidate = resolve(lexicalRoot, relativePath);
 
-  if (isOutsideRoot(root, candidate)) {
+  if (isOutsideRoot(lexicalRoot, lexicalCandidate)) {
     throw new SaberError(`path escapes repository root: ${relativePath}`);
   }
 
-  return candidate;
+  const canonicalRoot = realpathSync(lexicalRoot);
+  const ancestor = nearestExistingAncestor(lexicalCandidate);
+  const canonicalAncestor = realpathSync(ancestor);
+  const canonicalCandidate = resolve(
+    canonicalAncestor,
+    relative(ancestor, lexicalCandidate),
+  );
+
+  if (isOutsideRoot(canonicalRoot, canonicalCandidate)) {
+    throw new SaberError(`path escapes repository root: ${relativePath}`);
+  }
+
+  return canonicalCandidate;
 }
 
 /**
- * Resolve an existing file through symlinks and require its canonical target to
- * remain below the canonical repository root. Callers that create new files use
- * resolveWithinRoot instead because a non-existent target cannot be realpath'd.
+ * Re-check an existing file through symlinks before opening it. This keeps read
+ * callers safe if a path changed between lexical resolution and file access.
  */
 export async function resolveExistingPathWithinRoot(
   repositoryRoot: string,

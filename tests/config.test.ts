@@ -1,12 +1,16 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import test from "node:test";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
+import { loadRepositoryConfig } from "../src/lib/config.js";
 import { SaberError } from "../src/lib/errors.js";
 import { readTextWithinRoot, resolveWithinRoot } from "../src/lib/files.js";
 import { validateRepositoryConfig } from "../src/lib/validation.js";
+
+const projectRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 
 test("validateRepositoryConfig rejects a configured L3 capability", () => {
   const errors = validateRepositoryConfig({
@@ -30,6 +34,20 @@ test("validateRepositoryConfig accepts all three supported tools", () => {
   });
 
   assert.deepEqual(errors, []);
+});
+
+test("validateRepositoryConfig rejects a default tool missing from a non-empty supported list", () => {
+  const errors = validateRepositoryConfig({
+    workspace: {
+      schemaVersion: 1,
+      tools: { default: "codex", supported: ["claude"] },
+      projects: [],
+    },
+    capabilities: [],
+    connectors: [],
+  });
+
+  assert.deepEqual(errors, ["default tool codex is not included in supported tools"]);
 });
 
 test("validateRepositoryConfig identifies cross-file configuration errors", () => {
@@ -61,17 +79,95 @@ test("validateRepositoryConfig identifies cross-file configuration errors", () =
   ]);
 });
 
-test("resolveWithinRoot rejects paths escaping the repository root", () => {
-  assert.equal(resolveWithinRoot("/workspace/saber", "mcp/capabilities.yaml"), "/workspace/saber/mcp/capabilities.yaml");
+test("validateRepositoryConfig requires connector and capability mappings to agree both ways", () => {
+  const errors = validateRepositoryConfig({
+    workspace: { schemaVersion: 1, tools: { default: "codex" }, projects: [] },
+    capabilities: [
+      { id: "jira.read", risk: "L0", kind: "read", connector: "jira" },
+      { id: "external.assets.update", risk: "L1", kind: "action" },
+    ],
+    connectors: [
+      { id: "jira", kind: "http", requiredEnv: ["JIRA_TOKEN"], provides: [] },
+      {
+        id: "gitlab",
+        kind: "http",
+        requiredEnv: ["GITLAB_TOKEN"],
+        provides: ["jira.read", "jira.read", "external.assets.update"],
+      },
+    ],
+  });
 
-  assert.throws(
-    () => resolveWithinRoot("/workspace/saber", "../outside.yaml"),
-    (error: unknown) => error instanceof SaberError && /escapes repository root/.test(error.message),
-  );
-  assert.throws(
-    () => resolveWithinRoot("/workspace/saber", "C:\\outside.yaml"),
-    (error: unknown) => error instanceof SaberError && /escapes repository root/.test(error.message),
-  );
+  assert.deepEqual(errors, [
+    "capability jira.read is not provided by connector jira",
+    "connector gitlab repeats provided capability jira.read",
+    "connector gitlab provides capability jira.read mapped to connector jira",
+    "connector gitlab provides connectorless capability external.assets.update",
+  ]);
+});
+
+test("validateRepositoryConfig accepts a mutually consistent connector capability mapping", () => {
+  const errors = validateRepositoryConfig({
+    workspace: { schemaVersion: 1, tools: { default: "codex" }, projects: [] },
+    capabilities: [{ id: "jira.read", risk: "L0", kind: "read", connector: "jira" }],
+    connectors: [
+      {
+        id: "jira",
+        kind: "http",
+        requiredEnv: ["JIRA_TOKEN"],
+        provides: ["jira.read"],
+      },
+    ],
+  });
+
+  assert.deepEqual(errors, []);
+});
+
+test("resolveWithinRoot rejects paths escaping the repository root", async () => {
+  const temporaryDirectory = await mkdtemp(join(tmpdir(), "saber-path-root-"));
+  const repositoryRoot = join(temporaryDirectory, "repository");
+
+  await mkdir(repositoryRoot);
+
+  try {
+    assert.equal(
+      resolveWithinRoot(repositoryRoot, "mcp/capabilities.yaml"),
+      join(await realpath(repositoryRoot), "mcp", "capabilities.yaml"),
+    );
+
+    assert.throws(
+      () => resolveWithinRoot(repositoryRoot, "../outside.yaml"),
+      (error: unknown) => error instanceof SaberError && /escapes repository root/.test(error.message),
+    );
+    assert.throws(
+      () => resolveWithinRoot(repositoryRoot, "C:\\outside.yaml"),
+      (error: unknown) => error instanceof SaberError && /escapes repository root/.test(error.message),
+    );
+  } finally {
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("resolveWithinRoot rejects an escaping intermediate symlink for a new file", async () => {
+  const temporaryDirectory = await mkdtemp(join(tmpdir(), "saber-path-symlink-"));
+  const repositoryRoot = join(temporaryDirectory, "repository");
+  const externalDirectory = join(temporaryDirectory, "external");
+
+  try {
+    await mkdir(repositoryRoot);
+    await mkdir(externalDirectory);
+    await symlink(externalDirectory, join(repositoryRoot, "linked"), "dir");
+
+    assert.equal(
+      resolveWithinRoot(repositoryRoot, "new-file.yaml"),
+      join(await realpath(repositoryRoot), "new-file.yaml"),
+    );
+    assert.throws(
+      () => resolveWithinRoot(repositoryRoot, "linked/new-file.yaml"),
+      (error: unknown) => error instanceof SaberError && /escapes repository root/.test(error.message),
+    );
+  } finally {
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
 });
 
 test("readTextWithinRoot rejects a symlink whose real target escapes the repository root", async () => {
@@ -83,13 +179,32 @@ test("readTextWithinRoot rejects a symlink whose real target escapes the reposit
     await mkdir(repositoryRoot);
     await writeFile(join(repositoryRoot, "inside.yaml"), "inside: true\n", "utf8");
     await writeFile(externalFile, "outside: true\n", "utf8");
-    await symlink(externalFile, join(repositoryRoot, "escape.yaml"));
+    await symlink(externalFile, join(repositoryRoot, "escape.yaml"), "file");
 
     assert.equal(await readTextWithinRoot(repositoryRoot, "inside.yaml"), "inside: true\n");
     await assert.rejects(
       () => readTextWithinRoot(repositoryRoot, "escape.yaml"),
       (error: unknown) =>
         error instanceof SaberError && /escapes repository root/.test(error.message),
+    );
+  } finally {
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("loadRepositoryConfig hard-limits the MVP forbidden risk policy to L3", async () => {
+  const temporaryDirectory = await mkdtemp(join(tmpdir(), "saber-safety-policy-"));
+
+  try {
+    const source = await readFile(join(projectRoot, "saber.yaml"), "utf8");
+    const invalidPolicy = source.replace("    - L3\n", "    - L2\n");
+    assert.notEqual(invalidPolicy, source);
+    await writeFile(join(temporaryDirectory, "saber.yaml"), invalidPolicy, "utf8");
+
+    await assert.rejects(
+      () => loadRepositoryConfig(temporaryDirectory),
+      (error: unknown) =>
+        error instanceof SaberError && /forbiddenRiskLevels must be exactly \[L3\]/.test(error.message),
     );
   } finally {
     await rm(temporaryDirectory, { recursive: true, force: true });

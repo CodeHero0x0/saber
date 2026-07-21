@@ -123,3 +123,46 @@ test("role, workflow, and skill assets retain their minimum usable contracts", a
     assert.match(content, expectedContent, `${skill} does not contain usable instructions`);
   }
 });
+
+test("team skills ship linked reusable references, templates, and checklists", async () => {
+  const skillPackages = [
+    [
+      "grill-me",
+      ["references/question-bank.md", "templates/decision-record.md"],
+    ],
+    [
+      "grill-with-docs",
+      ["references/evidence-rubric.md", "templates/cited-decision-record.md"],
+    ],
+    [
+      "superpowers",
+      ["references/workflow-routing.md", "checklists/selection-checklist.md"],
+    ],
+    [
+      "openspec",
+      [
+        "templates/change-proposal.md",
+        "templates/archive-record.md",
+        "checklists/lifecycle-checklist.md",
+      ],
+    ],
+  ] as const;
+
+  for (const [skill, artifactPaths] of skillPackages) {
+    const skillPath = join(repositoryRoot, "skills", skill, "SKILL.md");
+    const skillContent = await readFile(skillPath, "utf8");
+
+    for (const artifactPath of artifactPaths) {
+      assert.ok(
+        skillContent.includes(`](${artifactPath})`),
+        `${skill} must link ${artifactPath}`,
+      );
+      const artifactContent = await readFile(
+        join(repositoryRoot, "skills", skill, artifactPath),
+        "utf8",
+      );
+      assert.match(artifactContent, /^# /mu, `${artifactPath} needs a useful title`);
+      assert.ok(artifactContent.trim().length >= 160, `${artifactPath} must not be a stub`);
+    }
+  }
+});

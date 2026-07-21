@@ -22,3 +22,9 @@ After proposal approval, implement only the accepted scope. Keep workitem artifa
 When the change is accepted, preserve the approved proposal, implementation evidence, decisions and follow-up risks in the workitem. Mark stale proposals superseded rather than rewriting history.
 
 Never skip from exploration to external action. If a requirement or source fingerprint changes, return to Explore or Propose with the responsible human.
+
+## 可复用资产
+
+- 在 Propose 阶段从[变更提案模板](templates/change-proposal.md)开始，明确范围、门禁和批准人。
+- 在 Archive 阶段用[归档记录模板](templates/archive-record.md)保留证据、偏差和后续事项。
+- 在每个阶段对照[生命周期检查清单](checklists/lifecycle-checklist.md)，发生来源漂移时返回 Explore 或 Propose。

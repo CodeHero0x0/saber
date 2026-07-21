@@ -12,3 +12,8 @@ description: Use when a requirement, architecture, or implementation plan needs 
 5. End with a concise decision record: chosen approach, rejected alternatives, open questions, risks, and the next human owner.
 
 Use this skill before writing a multi-step plan when uncertainty could change the architecture, ownership, safety boundary or acceptance gate. Pause instead of guessing when an answer would authorize an external write or redefine scope.
+
+## 可复用资产
+
+- 用[计划追问问题库](references/question-bank.md)选择与当前不确定性相关的问题，不把问题清单当成机械问卷。
+- 将已确认的结论、替代方案和风险写入[决策记录模板](templates/decision-record.md)，再交给下一位责任人。

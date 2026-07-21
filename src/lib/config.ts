@@ -114,17 +114,23 @@ function parseSaberConfig(record: Record<string, unknown>, schemaVersion: 1): Sa
     );
   }
 
+  const forbiddenRiskLevels = requireStringArray(
+    safety.forbiddenRiskLevels,
+    "saber.yaml.safety.forbiddenRiskLevels",
+  ).map((risk, index) =>
+    parseRiskLevel(risk, `saber.yaml.safety.forbiddenRiskLevels[${index}]`),
+  );
+
+  if (forbiddenRiskLevels.length !== 1 || forbiddenRiskLevels[0] !== "L3") {
+    throw new SaberError("saber.yaml.safety.forbiddenRiskLevels must be exactly [L3]");
+  }
+
   return {
     schemaVersion,
     name: requireString(record.name, "saber.yaml.name"),
     safety: {
       externalWrites,
-      forbiddenRiskLevels: requireStringArray(
-        safety.forbiddenRiskLevels,
-        "saber.yaml.safety.forbiddenRiskLevels",
-      ).map((risk, index) =>
-        parseRiskLevel(risk, `saber.yaml.safety.forbiddenRiskLevels[${index}]`),
-      ),
+      forbiddenRiskLevels,
     },
   };
 }
