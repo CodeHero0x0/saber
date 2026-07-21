@@ -3,3 +3,5 @@
 /.saber/
 /.idea/
 /.worktrees/
+node_modules/
+dist/
