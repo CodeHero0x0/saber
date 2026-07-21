@@ -19,7 +19,14 @@ const externalAssetId = /^[a-z][a-z0-9-]{0,63}$/u;
 const supportedGitProtocols = new Set(["https:", "http:", "ssh:", "git:"]);
 const scpStyleGitRemote = /^[A-Za-z0-9._-]+@[A-Za-z0-9._-]+:[A-Za-z0-9._/:-]+$/u;
 const externalPackagePathSegment = /^[A-Za-z0-9][A-Za-z0-9._-]*$/u;
-const terminalControlCharacter = /[\u0000-\u001f\u007f-\u009f]/u;
+// These characters can alter terminal rendering, conceal suffixes, or split a
+// displayed line. Reject them before a description is printed or a source is
+// parsed into Git argv.
+const unsafeTerminalCharacter = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
+
+function containsUnsafeTerminalCharacter(value: string): boolean {
+  return unsafeTerminalCharacter.test(value);
+}
 
 export function isToolName(value: unknown): value is ToolName {
   return typeof value === "string" && toolNames.includes(value as ToolName);
@@ -44,7 +51,7 @@ export function isSafeExternalAssetDescription(value: unknown): value is string 
     typeof value === "string" &&
     value.length > 0 &&
     value.trim() === value &&
-    !terminalControlCharacter.test(value)
+    !containsUnsafeTerminalCharacter(value)
   );
 }
 
@@ -85,7 +92,7 @@ export function isSafeExternalAssetSource(source: unknown): source is string {
     typeof source !== "string" ||
     source.length === 0 ||
     source.trim() !== source ||
-    terminalControlCharacter.test(source) ||
+    containsUnsafeTerminalCharacter(source) ||
     source.startsWith("-")
   ) {
     return false;

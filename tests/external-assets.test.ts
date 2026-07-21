@@ -25,6 +25,7 @@ import {
   type CommandRunner,
 } from "../src/lib/external-assets.js";
 import type { ExternalAssetsConfig } from "../src/lib/models.js";
+import { isSafeExternalAssetSource } from "../src/lib/validation.js";
 
 const repositoryRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 
@@ -1144,15 +1145,13 @@ test("external asset planning rejects descriptions that could alter terminal out
   const root = await temporaryRepository("saber-external-description-");
 
   try {
-    await assert.rejects(
-      () =>
-        planExternalAssetUpdates(
-          root,
-          registry([asset({ description: "可信描述\n\u001b[2J" })]),
-        ),
-      (error: unknown) =>
-        error instanceof SaberError && /description must be a single safe line/u.test(error.message),
-    );
+    for (const description of ["可信描述\n\u001b[2J", "可信描述\u202e"]) {
+      await assert.rejects(
+        () => planExternalAssetUpdates(root, registry([asset({ description })])),
+        (error: unknown) =>
+          error instanceof SaberError && /description must be a single safe line/u.test(error.message),
+      );
+    }
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -1166,6 +1165,9 @@ test("external updates reject control characters in Git sources before any clone
       "https://github.com/example/superpowers.git\n--upload-pack=evil",
       "https://github.com/example/superpowers.git\r--upload-pack=evil",
       "https://github.com/example/\u001bsuperpowers.git",
+      "https://github.com/example/\u202esuperpowers.git",
+      "https://github.com/example/\u2028superpowers.git",
+      "https://github.com/example/\u2029superpowers.git",
     ]) {
       const commands: { program: string; args: readonly string[] }[] = [];
       const result = await runCli(
@@ -1188,6 +1190,17 @@ test("external updates reject control characters in Git sources before any clone
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("external source validation keeps standard public HTTPS and SCP remotes", () => {
+  assert.equal(
+    isSafeExternalAssetSource("https://github.com/obra/superpowers.git"),
+    true,
+  );
+  assert.equal(
+    isSafeExternalAssetSource("git@github.com:obra/superpowers.git"),
+    true,
+  );
 });
 
 test("external asset planning rejects an in-repository symlinked managed root", async () => {
