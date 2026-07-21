@@ -7,7 +7,9 @@ import type {
   ConnectorConfig,
   ConnectorKind,
   ExternalAsset,
+  ExternalAssetCategory,
   ExternalAssetsConfig,
+  ExternalAssetPackage,
   ProjectConfig,
   RepositoryConfig,
   RiskLevel,
@@ -15,6 +17,13 @@ import type {
   ToolName,
   WorkspaceConfig,
 } from "./models.js";
+import {
+  isExternalAssetCategory,
+  isSafeExternalAssetDescription,
+  isSafeExternalAssetId,
+  isSafeExternalAssetPackagePath,
+  isSafeExternalAssetSource,
+} from "./validation.js";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -92,12 +101,23 @@ function parseConnectorKind(value: unknown, location: string): ConnectorKind {
   throw new SaberError(`${location} must be http or mcp-command`);
 }
 
+function parseExternalAssetCategory(
+  value: unknown,
+  location: string,
+): ExternalAssetCategory {
+  if (isExternalAssetCategory(value)) {
+    return value;
+  }
+
+  throw new SaberError(`${location} must be skill-collection or mcp-server`);
+}
+
 function parseYaml(text: string): unknown {
   try {
     return parse(text);
-  } catch (error: unknown) {
-    const reason = error instanceof Error ? error.message : String(error);
-    throw new SaberError(`could not parse saber.yaml: ${reason}`);
+  } catch {
+    // YAML parser messages may reproduce source text. Do not echo configuration values.
+    throw new SaberError("could not parse saber.yaml");
   }
 }
 
@@ -250,12 +270,60 @@ function parseExternalAsset(value: unknown, index: number): ExternalAsset {
     throw new SaberError(`${location}.kind must be git`);
   }
 
+  const id = requireString(record.id, `${location}.id`);
+  const description = requireString(record.description, `${location}.description`);
+  const source = requireString(record.source, `${location}.source`);
+  const category = parseExternalAssetCategory(record.category, `${location}.category`);
+
+  if (!isSafeExternalAssetId(id)) {
+    throw new SaberError(`${location}.id must be a lowercase asset identifier`);
+  }
+  if (!isSafeExternalAssetDescription(description)) {
+    throw new SaberError(`${location}.description must be a single safe line`);
+  }
+  if (!isSafeExternalAssetSource(source)) {
+    throw new SaberError(`${location}.source must be a safe Git remote`);
+  }
+  if (!Array.isArray(record.packages) || record.packages.length === 0) {
+    throw new SaberError(`${location}.packages must be a non-empty list`);
+  }
+
+  const packages = record.packages.map((selectedPackage, packageIndex) =>
+    parseExternalAssetPackage(selectedPackage, index, packageIndex, category),
+  );
+
   return {
-    id: requireString(record.id, `${location}.id`),
+    id,
+    category,
+    description,
     kind,
-    source: requireString(record.source, `${location}.source`),
-    destination: requireString(record.destination, `${location}.destination`),
+    source,
+    packages,
   };
+}
+
+function parseExternalAssetPackage(
+  value: unknown,
+  assetIndex: number,
+  packageIndex: number,
+  category: ExternalAssetCategory,
+): ExternalAssetPackage {
+  const location = `saber.yaml.externalAssets.assets[${assetIndex}].packages[${packageIndex}]`;
+  const record = requireRecord(value, location);
+  const id = requireString(record.id, `${location}.id`);
+  const sourcePath = requireString(record.sourcePath, `${location}.sourcePath`);
+
+  if (!isSafeExternalAssetId(id)) {
+    throw new SaberError(`${location}.id must be a lowercase package identifier`);
+  }
+  if (!isSafeExternalAssetPackagePath(sourcePath)) {
+    throw new SaberError(`${location}.sourcePath must be a safe package subtree`);
+  }
+  if (category === "skill-collection" && !sourcePath.startsWith("skills/")) {
+    throw new SaberError(`${location}.sourcePath must be below skills/ for a skill collection`);
+  }
+
+  return { id, sourcePath };
 }
 
 function parseExternalAssetsConfig(

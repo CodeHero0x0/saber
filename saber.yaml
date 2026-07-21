@@ -125,16 +125,48 @@ connectors:
     provides:
       - gitlab.mr.read
       - gitlab.mr.create
-# 外部资产源：仅在成员显式执行手动更新时下载到被忽略的 .saber/external/ 目录。
+# 外部资产源：仅在成员显式执行手动更新时写入被忽略的 saber-v1 缓存与物化目录。
 externalAssets:
+  # 每项包含稳定 id、分类、用途说明、Git 源和选中的包；不得填写凭证或私有地址。
   assets:
-    # Superpowers 上游公开 Git 源与本地忽略目标目录。
+    # Superpowers 是可按需拉取的外部技能集合，不随脚手架仓库提交。
     - id: superpowers
+      # 分类用于区分技能集合与未来可配置的 MCP 服务集合。
+      category: skill-collection
+      # 面向成员的简短用途说明，不包含任何凭证或私有地址。
+      description: 团队可按需拉取的 Superpowers 技能集合。
+      # 当前更新方式；MVP 仅支持安全的 Git clone/pull。
       kind: git
+      # 上游公开 Git 源；凭证、URL 参数和片段均不允许写入配置。
       source: https://github.com/obra/superpowers.git
-      destination: .saber/external/superpowers
-    # OpenSpec 上游公开 Git 源与本地忽略目标目录。
+      # 仅稀疏拉取并物化以下技能包；不要填写上游仓库根目录。
+      packages:
+        # 稳定包 ID 和上游子树路径；包目录必须包含 SKILL.md 及其依赖资料。
+        - id: brainstorming
+          sourcePath: skills/brainstorming
+        - id: writing-plans
+          sourcePath: skills/writing-plans
+        - id: executing-plans
+          sourcePath: skills/executing-plans
+        - id: systematic-debugging
+          sourcePath: skills/systematic-debugging
+        - id: verification-before-completion
+          sourcePath: skills/verification-before-completion
+        - id: requesting-code-review
+          sourcePath: skills/requesting-code-review
+    # OpenSpec 是可按需拉取的外部规格工作流技能集合。
     - id: openspec
+      category: skill-collection
+      description: 团队可按需拉取的 OpenSpec 规格工作流技能集合。
       kind: git
       source: https://github.com/Fission-AI/OpenSpec.git
-      destination: .saber/external/openspec
+      # 仅暴露需求探索、提案、实施和归档四个核心流程技能。
+      packages:
+        - id: openspec-explore
+          sourcePath: skills/openspec-explore
+        - id: openspec-propose
+          sourcePath: skills/openspec-propose
+        - id: openspec-apply-change
+          sourcePath: skills/openspec-apply-change
+        - id: openspec-archive-change
+          sourcePath: skills/openspec-archive-change

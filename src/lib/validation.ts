@@ -2,6 +2,7 @@ import { isAbsolute } from "node:path";
 
 import type {
   Capability,
+  ExternalAssetCategory,
   RepositoryValidationInput,
   RiskLevel,
   ToolName,
@@ -10,9 +11,95 @@ import type {
 const environmentVariableName = /^[A-Z][A-Z0-9_]*$/u;
 const toolNames: readonly ToolName[] = ["codex", "claude", "opencode"];
 const riskLevels: readonly RiskLevel[] = ["L0", "L1", "L2", "L3"];
+const externalAssetCategories: readonly ExternalAssetCategory[] = [
+  "skill-collection",
+  "mcp-server",
+];
+const externalAssetId = /^[a-z][a-z0-9-]{0,63}$/u;
+const supportedGitProtocols = new Set(["https:", "http:", "ssh:", "git:"]);
+const scpStyleGitRemote = /^[A-Za-z0-9._-]+@[A-Za-z0-9._-]+:[A-Za-z0-9._/:-]+$/u;
+const externalPackagePathSegment = /^[A-Za-z0-9][A-Za-z0-9._-]*$/u;
+const terminalControlCharacter = /[\u0000-\u001f\u007f-\u009f]/u;
 
 export function isToolName(value: unknown): value is ToolName {
   return typeof value === "string" && toolNames.includes(value as ToolName);
+}
+
+/** Return whether an asset uses one of the registry categories understood by Saber. */
+export function isExternalAssetCategory(value: unknown): value is ExternalAssetCategory {
+  return (
+    typeof value === "string" &&
+    externalAssetCategories.includes(value as ExternalAssetCategory)
+  );
+}
+
+/** Asset identifiers are stable selectors, never relative paths or arbitrary shell input. */
+export function isSafeExternalAssetId(value: unknown): value is string {
+  return typeof value === "string" && externalAssetId.test(value);
+}
+
+/** Descriptions are emitted in the human CLI, so keep them single-line and terminal-safe. */
+export function isSafeExternalAssetDescription(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    value.length > 0 &&
+    value.trim() === value &&
+    !terminalControlCharacter.test(value)
+  );
+}
+
+/** Source package paths select a subtree; they can never select an upstream root or parent path. */
+export function isSafeExternalAssetPackagePath(value: unknown): value is string {
+  if (typeof value !== "string" || value.includes("\\")) {
+    return false;
+  }
+
+  const segments = value.split("/");
+  if (segments.length < 2) {
+    return false;
+  }
+
+  return segments.every((segment) => externalPackagePathSegment.test(segment));
+}
+
+/** URL userinfo and query strings can hold tokens, so they are not allowed in Git sources. */
+export function externalAssetSourceContainsSensitiveUrlParts(source: unknown): boolean {
+  if (typeof source !== "string") {
+    return true;
+  }
+
+  try {
+    const url = new URL(source);
+    return Boolean(url.username || url.password || url.search || url.hash);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Git source values are data, not command fragments. Permit standard remote
+ * URLs and scp-style SSH remotes, but never local paths or option-looking text.
+ */
+export function isSafeExternalAssetSource(source: unknown): source is string {
+  if (
+    typeof source !== "string" ||
+    source.length === 0 ||
+    source.trim() !== source ||
+    source.startsWith("-")
+  ) {
+    return false;
+  }
+
+  try {
+    const url = new URL(source);
+    return (
+      supportedGitProtocols.has(url.protocol) &&
+      url.hostname.length > 0 &&
+      !externalAssetSourceContainsSensitiveUrlParts(source)
+    );
+  } catch {
+    return scpStyleGitRemote.test(source);
+  }
 }
 
 function isRiskLevel(value: unknown): value is RiskLevel {
@@ -164,6 +251,54 @@ function validateExternalAssets(input: RepositoryValidationInput, errors: string
     input.externalAssets.assets.map((asset) => asset.id),
   )) {
     errors.push(`duplicate external asset id ${duplicate}`);
+  }
+
+  for (const asset of input.externalAssets.assets) {
+    if (!isSafeExternalAssetId(asset.id)) {
+      errors.push(`invalid external asset id ${asset.id}`);
+    }
+    if (!isExternalAssetCategory(asset.category)) {
+      errors.push(`external asset ${asset.id} has unknown category`);
+    }
+    if (asset.kind !== "git") {
+      errors.push(`external asset ${asset.id} has unsupported kind`);
+    }
+    if (!isSafeExternalAssetDescription(asset.description)) {
+      errors.push(`external asset ${asset.id} description must be a single safe line`);
+    }
+    if (!isSafeExternalAssetSource(asset.source)) {
+      errors.push(`external asset ${asset.id} source must be a safe Git remote`);
+    }
+    if (!Array.isArray(asset.packages) || asset.packages.length === 0) {
+      errors.push(`external asset ${asset.id} must select at least one package`);
+      continue;
+    }
+
+    const packageIds = new Set<string>();
+    const packagePaths = new Set<string>();
+    for (const selectedPackage of asset.packages) {
+      if (!isSafeExternalAssetId(selectedPackage.id)) {
+        errors.push(`external asset ${asset.id} has an invalid package id`);
+      } else if (packageIds.has(selectedPackage.id)) {
+        errors.push(`external asset ${asset.id} repeats package id ${selectedPackage.id}`);
+      }
+      packageIds.add(selectedPackage.id);
+
+      const safeSourcePath = isSafeExternalAssetPackagePath(selectedPackage.sourcePath);
+      if (!safeSourcePath) {
+        errors.push(`external asset ${asset.id} has an invalid package source path`);
+      } else if (packagePaths.has(selectedPackage.sourcePath)) {
+        errors.push(`external asset ${asset.id} repeats package source path ${selectedPackage.sourcePath}`);
+      }
+      packagePaths.add(selectedPackage.sourcePath);
+
+      if (
+        asset.category === "skill-collection" &&
+        (!safeSourcePath || !selectedPackage.sourcePath.startsWith("skills/"))
+      ) {
+        errors.push(`external skill asset ${asset.id} package must be below skills/`);
+      }
+    }
   }
 }
 

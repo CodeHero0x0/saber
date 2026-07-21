@@ -44,11 +44,24 @@ export type SaberConfig = {
   };
 };
 
+export type ExternalAssetKind = "git";
+
+/** A registry category keeps skills and future MCP packages distinguishable. */
+export type ExternalAssetCategory = "skill-collection" | "mcp-server";
+
+/** A selected source subtree that can be installed without exposing its whole upstream repository. */
+export type ExternalAssetPackage = {
+  id: string;
+  sourcePath: string;
+};
+
 export type ExternalAsset = {
   id: string;
-  kind: "git";
+  category: ExternalAssetCategory;
+  description: string;
+  kind: ExternalAssetKind;
   source: string;
-  destination: string;
+  packages: ExternalAssetPackage[];
 };
 
 export type ExternalAssetsConfig = {

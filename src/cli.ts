@@ -3,6 +3,10 @@ import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import {
+  runExternalCommand,
+  type ExternalCommandDependencies,
+} from "./commands/external.js";
 import { SaberError } from "./lib/errors.js";
 
 export type CliResult = {
@@ -17,14 +21,21 @@ Commands:
   saber validate
   saber doctor
   saber status
+  saber external list [--json]
+  saber external update [id] [--apply --confirm] [--json]
 `;
+
+export type CliDependencies = {
+  externalCommand?: ExternalCommandDependencies;
+};
 
 export async function runCli(
   argv: readonly string[],
-  { cwd = process.cwd() }: { cwd?: string } = {},
+  {
+    cwd = process.cwd(),
+    dependencies,
+  }: { cwd?: string; dependencies?: CliDependencies } = {},
 ): Promise<CliResult> {
-  void cwd;
-
   const [command] = argv;
 
   if (command === undefined || command === "--help" || command === "-h") {
@@ -37,6 +48,13 @@ export async function runCli(
       stdout: `${command} is not implemented yet\n`,
       stderr: "",
     };
+  }
+
+  if (command === "external") {
+    return runExternalCommand(argv.slice(1), {
+      cwd,
+      dependencies: dependencies?.externalCommand,
+    });
   }
 
   const error = new SaberError(`Unknown command: ${command}`, 2);

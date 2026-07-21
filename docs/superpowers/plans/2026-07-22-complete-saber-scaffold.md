@@ -4,7 +4,7 @@
 
 **Goal:** Complete the approved Saber team AI-development scaffold: neutral assets, multi-project workspace tooling, workitem handoffs, safe connector configuration, on-demand Codex/Claude/OpenCode materialization, manual external asset updates, tests, CI and a complete usage guide.
 
-**Architecture:** Keep all repository-level configuration in one `saber.yaml`; keep human guidance in Markdown. The strict TypeScript CLI parses the single configuration source and Markdown assets, validates their relationships, renders tool-local runtime files below ignored `.saber/runtime/`, manages local workitem files, and creates explicit L2 action previews. Network-capable Jira/GitLab operations are configured through environment variables and can only execute after a preview token and an explicit confirmation. MCP-based IdeaMCP and MySQL integrations are declared as capability/command templates rather than embedded credentials.
+**Architecture:** Keep all repository-level configuration in one `saber.yaml`; keep human guidance in Markdown. The strict TypeScript CLI parses the single configuration source and Markdown assets, validates their relationships, renders tool-local runtime files below ignored `.saber/runtime/`, manages local workitem files, and creates explicit L2 action previews. External skill collections use a sparse ignored cache plus a curated selected-package install area, never a discoverable full upstream checkout. Network-capable Jira/GitLab operations are configured through environment variables and can only execute after a preview token and an explicit confirmation. MCP-based IdeaMCP and MySQL integrations are declared as capability/command templates rather than embedded credentials.
 
 **Tech Stack:** Node.js 20+, strict TypeScript/NodeNext, `yaml`, Node `node:test`, global `fetch`, Git CLI, GitHub Actions.
 
@@ -265,7 +265,7 @@ Expected: FAIL because action and update modules do not exist.
 - Jira HTTP connector reads with `GET /rest/api/3/issue/{key}`; update uses `PUT /rest/api/3/issue/{key}` only through the L2 gate.
 - GitLab HTTP connector reads merge requests and creates one through `POST /api/v4/projects/{id}/merge_requests` only through the L2 gate.
 - All HTTP calls use an injected `fetch` implementation in tests, read only environment-variable *values* at execution time, and redact tokens from every error/result.
-- `external update [id] [--apply --confirm]` reads the `externalAssets` section of `saber.yaml`; without both flags it prints planned `git clone` or `git -C pull --ff-only` calls. With both flags it updates only destinations below ignored `.saber/external/`.
+- `external list` reports each configured source and selected skill/MCP packages. `external update [id] [--apply --confirm]` reads the `externalAssets` section of `saber.yaml`; it uses a sparse Git cache below ignored `.saber/cache/saber-v1/` and materializes only the explicitly selected complete packages below `.saber/external/saber-v1/{skills,mcp}/`. Without both flags it prints a non-mutating plan; with both flags it updates only the configured paths, verifies the cache `origin`, and never exposes a whole upstream checkout as tool-discoverable content. Legacy `.saber/cache/<asset>`, `.saber/external/skills/`, and `.saber/external/manifest.json` are outside this managed namespace.
 
 - [ ] **Step 4: GREEN and commit**
 
@@ -306,11 +306,11 @@ Expected: FAIL because materialization modules do not exist.
 
 - [ ] **Step 3: Implement materialization**
 
-- `materialize --tool <codex|claude|opencode> [--capability <id>] [--project <name>]` accepts repeated capability/project flags.
+- `materialize --tool <codex|claude|opencode> --role <ba|dev|qa> [--capability <id>] [--project <name>]` resolves the role's default team skills, external package IDs, workflows and capabilities, then accepts repeated capability/project flags for narrowing or extension within that role profile.
 - Without explicit capability flags, it uses `workspace.tools.defaultCapabilities`; without `--tool`, it uses `workspace.tools.default`.
-- It validates each requested capability and project, then writes only below `.saber/runtime/<tool>/`.
-- It writes `manifest.json` and tool-native files: `AGENTS.md` for Codex, `CLAUDE.md` for Claude, `opencode.json` plus `AGENTS.md` for OpenCode.
-- Generated instructions must identify the selected workitem/project/capabilities and link back to the repository-neutral roles/workflows/skills.
+- It validates each requested capability and project, the role profile, and the generated external-package manifest; it fails with a concrete `external update` recovery command if a selected package is missing.
+- It writes a private runtime manifest below `.saber/runtime/<tool>/`, then creates only the tool-native discovery projection for the selected role: Codex gets `.agents/skills/` links plus `AGENTS.md`; Claude and OpenCode get their adapter-defined native equivalents.
+- Generated instructions must identify the selected role, workitem/project/capabilities and exact team/external skill IDs, and link back to the repository-neutral roles/workflows/skills rather than a cache or broad upstream checkout.
 
 - [ ] **Step 4: GREEN and commit**
 
