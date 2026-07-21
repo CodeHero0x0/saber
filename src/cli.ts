@@ -1,3 +1,5 @@
+#!/usr/bin/env node
+import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -43,7 +45,8 @@ export async function runCli(
 
 const entrypoint = process.argv[1];
 const isDirectExecution =
-  entrypoint !== undefined && fileURLToPath(import.meta.url) === resolve(entrypoint);
+  entrypoint !== undefined &&
+  realpathSync(fileURLToPath(import.meta.url)) === realpathSync(resolve(entrypoint));
 
 if (isDirectExecution) {
   const result = await runCli(process.argv.slice(2));
