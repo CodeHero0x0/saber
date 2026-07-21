@@ -91,29 +91,13 @@ test("runCli rejects an unknown command", async () => {
   assert.equal(result.stderr, "Unknown command: unknown\n");
 });
 
-for (const command of ["validate", "doctor", "status"]) {
-  test(`runCli returns a placeholder for ${command}`, async () => {
-    const result = await runCli([command]);
+test("direct CLI execution writes a parseable validate JSON report", async () => {
+  const result = await executeCli(["validate", "--json"]);
 
-    assert.deepEqual(result, {
-      exitCode: 0,
-      stdout: `${command} is not implemented yet\n`,
-      stderr: "",
-    });
-  });
-}
-
-for (const command of ["validate", "doctor", "status"]) {
-  test(`direct CLI execution writes the ${command} placeholder`, async () => {
-    const result = await executeCli([command]);
-
-    assert.deepEqual(result, {
-      exitCode: 0,
-      stdout: `${command} is not implemented yet\n`,
-      stderr: "",
-    });
-  });
-}
+  assert.equal(result.exitCode, 0);
+  assert.equal(result.stderr, "");
+  assert.deepEqual(JSON.parse(result.stdout), { valid: true, errors: [] });
+});
 
 test("importing the CLI module does not write output or change process.exitCode", async () => {
   const result = await executeTsx([
@@ -162,12 +146,10 @@ test("packaged CLI executes through an npm-style symlink", async () => {
       executableLink,
     );
 
-    const validate = await executeProcess(executableLink, ["validate"]);
-    assert.deepEqual(validate, {
-      exitCode: 0,
-      stdout: "validate is not implemented yet\n",
-      stderr: "",
-    });
+    const validate = await executeProcess(executableLink, ["validate", "--json"]);
+    assert.equal(validate.exitCode, 0);
+    assert.equal(validate.stderr, "");
+    assert.deepEqual(JSON.parse(validate.stdout), { valid: true, errors: [] });
 
     const unknown = await executeProcess(executableLink, ["unknown"]);
     assert.deepEqual(unknown, {

@@ -7,6 +7,22 @@ import {
   runExternalCommand,
   type ExternalCommandDependencies,
 } from "./commands/external.js";
+import {
+  runValidateCommand,
+  type ValidateCommandDependencies,
+} from "./commands/validate.js";
+import {
+  runDoctorCommand,
+  type DoctorCommandDependencies,
+} from "./commands/doctor.js";
+import {
+  runStatusCommand,
+  type StatusCommandDependencies,
+} from "./commands/status.js";
+import {
+  runInitCommand,
+  type InitCommandDependencies,
+} from "./commands/init.js";
 import { SaberError } from "./lib/errors.js";
 
 export type CliResult = {
@@ -18,15 +34,20 @@ export type CliResult = {
 const usage = `Usage: saber <command>
 
 Commands:
-  saber validate
-  saber doctor
-  saber status
+  saber validate [--json]
+  saber doctor [--json]
+  saber status [--json]
+  saber init [--apply --confirm] [--json]
   saber external list [--json]
   saber external update [id] [--apply --confirm] [--json]
 `;
 
 export type CliDependencies = {
   externalCommand?: ExternalCommandDependencies;
+  validateCommand?: ValidateCommandDependencies;
+  doctorCommand?: DoctorCommandDependencies;
+  statusCommand?: StatusCommandDependencies;
+  initCommand?: InitCommandDependencies;
 };
 
 export async function runCli(
@@ -42,12 +63,32 @@ export async function runCli(
     return { exitCode: 0, stdout: usage, stderr: "" };
   }
 
-  if (command === "validate" || command === "doctor" || command === "status") {
-    return {
-      exitCode: 0,
-      stdout: `${command} is not implemented yet\n`,
-      stderr: "",
-    };
+  if (command === "validate") {
+    return runValidateCommand(argv.slice(1), {
+      cwd,
+      dependencies: dependencies?.validateCommand,
+    });
+  }
+
+  if (command === "doctor") {
+    return runDoctorCommand(argv.slice(1), {
+      cwd,
+      dependencies: dependencies?.doctorCommand,
+    });
+  }
+
+  if (command === "status") {
+    return runStatusCommand(argv.slice(1), {
+      cwd,
+      dependencies: dependencies?.statusCommand,
+    });
+  }
+
+  if (command === "init") {
+    return runInitCommand(argv.slice(1), {
+      cwd,
+      dependencies: dependencies?.initCommand,
+    });
   }
 
   if (command === "external") {

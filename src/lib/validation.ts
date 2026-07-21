@@ -172,6 +172,15 @@ function validateProjects(input: RepositoryValidationInput, errors: string[]): v
     if (isUnsafeProjectPath(project.path)) {
       errors.push(`project ${project.name} has unsafe path ${project.path}`);
     }
+    // Project clone sources use the exact same allow-list as sparse external
+    // assets. Never accept a local path, option-like text, insecure protocol,
+    // or URL userinfo that could carry a credential.
+    if (
+      project.repository !== undefined &&
+      !isSafeExternalAssetSource(project.repository)
+    ) {
+      errors.push(`project ${project.name} has unsafe repository`);
+    }
   }
 
   for (const duplicate of findDuplicateValues(
