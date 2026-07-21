@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import test from "node:test";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { SaberError } from "../src/lib/errors.js";
-import { resolveWithinRoot } from "../src/lib/files.js";
+import { readTextWithinRoot, resolveWithinRoot } from "../src/lib/files.js";
 import { validateRepositoryConfig } from "../src/lib/validation.js";
 
 test("validateRepositoryConfig rejects a configured L3 capability", () => {
@@ -69,4 +72,26 @@ test("resolveWithinRoot rejects paths escaping the repository root", () => {
     () => resolveWithinRoot("/workspace/saber", "C:\\outside.yaml"),
     (error: unknown) => error instanceof SaberError && /escapes repository root/.test(error.message),
   );
+});
+
+test("readTextWithinRoot rejects a symlink whose real target escapes the repository root", async () => {
+  const temporaryDirectory = await mkdtemp(join(tmpdir(), "saber-root-boundary-"));
+  const repositoryRoot = join(temporaryDirectory, "repository");
+  const externalFile = join(temporaryDirectory, "external.yaml");
+
+  try {
+    await mkdir(repositoryRoot);
+    await writeFile(join(repositoryRoot, "inside.yaml"), "inside: true\n", "utf8");
+    await writeFile(externalFile, "outside: true\n", "utf8");
+    await symlink(externalFile, join(repositoryRoot, "escape.yaml"));
+
+    assert.equal(await readTextWithinRoot(repositoryRoot, "inside.yaml"), "inside: true\n");
+    await assert.rejects(
+      () => readTextWithinRoot(repositoryRoot, "escape.yaml"),
+      (error: unknown) =>
+        error instanceof SaberError && /escapes repository root/.test(error.message),
+    );
+  } finally {
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
 });

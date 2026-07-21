@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readFile, realpath } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 
 import { SaberError } from "./errors.js";
@@ -35,9 +35,31 @@ export function resolveWithinRoot(repositoryRoot: string, relativePath: string):
   return candidate;
 }
 
+/**
+ * Resolve an existing file through symlinks and require its canonical target to
+ * remain below the canonical repository root. Callers that create new files use
+ * resolveWithinRoot instead because a non-existent target cannot be realpath'd.
+ */
+export async function resolveExistingPathWithinRoot(
+  repositoryRoot: string,
+  relativePath: string,
+): Promise<string> {
+  const candidate = resolveWithinRoot(repositoryRoot, relativePath);
+  const [canonicalRoot, canonicalCandidate] = await Promise.all([
+    realpath(repositoryRoot),
+    realpath(candidate),
+  ]);
+
+  if (isOutsideRoot(canonicalRoot, canonicalCandidate)) {
+    throw new SaberError(`path escapes repository root: ${relativePath}`);
+  }
+
+  return canonicalCandidate;
+}
+
 export async function readTextWithinRoot(
   repositoryRoot: string,
   relativePath: string,
 ): Promise<string> {
-  return readFile(resolveWithinRoot(repositoryRoot, relativePath), "utf8");
+  return readFile(await resolveExistingPathWithinRoot(repositoryRoot, relativePath), "utf8");
 }
