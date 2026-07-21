@@ -33,6 +33,7 @@ type CreateRequest = {
   key: string;
   jiraUrl: string;
   fingerprint: string;
+  updatedAt?: string;
   projects: string[];
   json: boolean;
 };
@@ -44,6 +45,7 @@ type HandoffRequest = {
   summary: string;
   risk: string;
   next: string;
+  fingerprint?: string;
   json: boolean;
 };
 
@@ -139,6 +141,7 @@ function parseWorkitemRequest(argv: readonly string[]): WorkitemRequest {
     const options = parseOptions(rest, {
       "--jira-url": {},
       "--fingerprint": {},
+      "--updated-at": {},
       "--project": { repeatable: true },
     });
     const projects = options.values.get("--project") ?? [];
@@ -150,6 +153,7 @@ function parseWorkitemRequest(argv: readonly string[]): WorkitemRequest {
       key: oneKey(options, action),
       jiraUrl: singleValue(options, "--jira-url"),
       fingerprint: singleValue(options, "--fingerprint"),
+      updatedAt: options.values.get("--updated-at")?.[0],
       projects: [...projects],
       json: options.flags.has("--json"),
     };
@@ -161,6 +165,7 @@ function parseWorkitemRequest(argv: readonly string[]): WorkitemRequest {
       "--summary": {},
       "--risk": {},
       "--next": {},
+      "--fingerprint": {},
     });
     return {
       action,
@@ -169,6 +174,7 @@ function parseWorkitemRequest(argv: readonly string[]): WorkitemRequest {
       summary: singleValue(options, "--summary"),
       risk: singleValue(options, "--risk"),
       next: singleValue(options, "--next"),
+      fingerprint: options.values.get("--fingerprint")?.[0],
       json: options.flags.has("--json"),
     };
   }
@@ -252,14 +258,22 @@ function formatStatus(report: WorkitemStatusReport): string {
     `Workitem ${report.key}:`,
     `- Jira: ${report.jiraUrl}`,
     `- Fingerprint: ${report.fingerprint}`,
+    `- Jira updated at: ${report.updatedAt ?? "unknown"}`,
     "Artifacts:",
-    ...report.artifacts.map((artifact) => `- ${artifact.path}: ${artifact.state}`),
+    ...report.artifacts.map(
+      (artifact) =>
+        `- ${artifact.path}: ${artifact.state}${
+          artifact.detail === undefined ? "" : ` (${artifact.detail})`
+        }`,
+    ),
     "Repositories:",
     ...report.repositories.map(
       (repository) =>
         `- ${repository.name}: ${repository.path}${
           repository.repository === undefined ? "" : ` (${repository.repository})`
-        }`,
+        }; branch: ${repository.branch ?? "unknown"}; commit: ${
+          repository.commit ?? "unknown"
+        }; merge request: ${repository.mergeRequest ?? "unknown"}; CI: ${repository.ci ?? "unknown"}`,
     ),
     `Handoff records: ${report.handoffCount}`,
     "",
@@ -299,6 +313,7 @@ export async function runWorkitemCommand(
         key: request.key,
         jiraUrl: request.jiraUrl,
         fingerprint: request.fingerprint,
+        updatedAt: request.updatedAt,
         repositories,
       });
       const result = { key: metadata.key, action: "created" as const, repositories: metadata.repositories };
@@ -310,6 +325,16 @@ export async function runWorkitemCommand(
     }
 
     if (request.action === "handoff") {
+      if (request.fingerprint !== undefined) {
+        const drift = await compareWorkitemFingerprint(cwd, request.key, request.fingerprint);
+        if (drift.state === "paused") {
+          return {
+            exitCode: 3,
+            stdout: request.json ? asJson(drift) : formatDrift(drift),
+            stderr: "",
+          };
+        }
+      }
       const handoff = await appendWorkitemHandoff(cwd, {
         key: request.key,
         role: request.role,

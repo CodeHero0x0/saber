@@ -24,12 +24,22 @@ export type WorkitemRepositoryReference = {
   repository?: string;
 };
 
+/** Current, source-verified repository delivery references kept in repositories.yaml. */
+export type WorkitemRepositoryEvidence = WorkitemRepositoryReference & {
+  branch: string | null;
+  commit: string | null;
+  mergeRequest: string | null;
+  ci: string | null;
+};
+
 export type WorkitemMetadata = {
   schemaVersion: 1;
   key: string;
   jira: {
     url: string;
     fingerprint: string;
+    /** Omitted until a real Jira L0 intake supplies the source updatedAt fact. */
+    updatedAt?: string;
   };
   repositories: WorkitemRepositoryReference[];
 };
@@ -38,6 +48,8 @@ export type WorkitemCreateInput = {
   key: string;
   jiraUrl: string;
   fingerprint: string;
+  /** A Jira-provided ISO-8601 updatedAt fact. Never synthesized from local time. */
+  updatedAt?: string;
   /** Preferred explicit repository references, resolved by the CLI from saber.yaml. */
   repositories?: readonly WorkitemRepositoryReference[];
   /** Compatibility shorthand for callers that only know selected project names. */
@@ -68,15 +80,19 @@ export type WorkitemDriftReport = {
 
 export type WorkitemArtifactState = {
   path: string;
-  state: "present" | "missing";
+  state: "present" | "missing" | "invalid";
+  /** A static, safe diagnostic; never echo untrusted evidence content. */
+  detail?: string;
 };
 
 export type WorkitemStatusReport = {
   key: string;
   jiraUrl: string;
   fingerprint: string;
+  /** Null means the local workitem was created before an intake supplied this Jira fact. */
+  updatedAt: string | null;
   artifacts: WorkitemArtifactState[];
-  repositories: WorkitemRepositoryReference[];
+  repositories: WorkitemRepositoryEvidence[];
   handoffCount: number;
 };
 
@@ -154,6 +170,50 @@ function validateFingerprint(value: string): string {
   return value;
 }
 
+const isoTimestamp = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,9})?(Z|[+-]\d{2}:?\d{2})$/u;
+
+/**
+ * Keep the source timestamp distinct from local command time: absent remains
+ * absent, while a supplied Jira ISO timestamp is normalized to its UTC instant.
+ */
+function validateUpdatedAt(value: string | undefined): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  const match = isoTimestamp.exec(value);
+  if (match === null) {
+    throw new SaberError("invalid Jira updatedAt timestamp", 2);
+  }
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = Number(match[4]);
+  const minute = Number(match[5]);
+  const second = Number(match[6]);
+  const zone = match[7] ?? "";
+  const daysInMonth = month >= 1 && month <= 12 ? new Date(Date.UTC(year, month, 0)).getUTCDate() : 0;
+  const offset = zone === "Z" ? undefined : zone.slice(1).replace(":", "");
+  const offsetHour = offset === undefined ? 0 : Number(offset.slice(0, 2));
+  const offsetMinute = offset === undefined ? 0 : Number(offset.slice(2, 4));
+  if (
+    year < 1 ||
+    day < 1 ||
+    day > daysInMonth ||
+    hour > 23 ||
+    minute > 59 ||
+    second > 59 ||
+    offsetHour > 23 ||
+    offsetMinute > 59
+  ) {
+    throw new SaberError("invalid Jira updatedAt timestamp", 2);
+  }
+  const timestamp = Date.parse(value);
+  if (Number.isNaN(timestamp)) {
+    throw new SaberError("invalid Jira updatedAt timestamp", 2);
+  }
+  return new Date(timestamp).toISOString();
+}
+
 function validateJiraUrl(value: string): string {
   if (value.length === 0 || value.length > 2_048 || isControlText(value)) {
     throw new SaberError("invalid Jira URL", 2);
@@ -225,6 +285,153 @@ function normalizeRepositoryReference(value: unknown): WorkitemRepositoryReferen
   return value.repository === undefined
     ? { name: value.name, path: value.path }
     : { name: value.name, path: value.path, repository: value.repository };
+}
+
+function validateStableReference(
+  label: string,
+  value: unknown,
+  allowLeadingBang = false,
+): string | null {
+  if (value === undefined || value === null) {
+    return null;
+  }
+  const allowedReference = allowLeadingBang
+    ? /^[A-Za-z0-9!][A-Za-z0-9._!:/-]*$/u
+    : /^[A-Za-z0-9][A-Za-z0-9._!:/-]*$/u;
+  if (
+    typeof value !== "string" ||
+    value.length === 0 ||
+    value.length > 512 ||
+    isControlText(value) ||
+    !allowedReference.test(value)
+  ) {
+    throw new SaberError(`invalid repository ${label}`, 2);
+  }
+  return value;
+}
+
+function normalizeRepositoryEvidence(value: unknown): WorkitemRepositoryEvidence {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ["name", "path", "repository", "branch", "commit", "mergeRequest", "ci"])
+  ) {
+    throw new SaberError("invalid repository evidence", 2);
+  }
+  const reference = normalizeRepositoryReference({
+    name: value.name,
+    path: value.path,
+    ...(value.repository === undefined ? {} : { repository: value.repository }),
+  });
+  const branch = validateStableReference("branch", value.branch);
+  const commit = value.commit === undefined || value.commit === null
+    ? null
+    : typeof value.commit === "string" && /^[0-9a-fA-F]{7,64}$/u.test(value.commit)
+      ? value.commit.toLowerCase()
+      : (() => {
+          throw new SaberError("invalid repository commit", 2);
+        })();
+  return {
+    ...reference,
+    branch,
+    commit,
+    mergeRequest: validateStableReference("merge request", value.mergeRequest, true),
+    ci: validateStableReference("CI reference", value.ci),
+  };
+}
+
+function sameRepositoryReference(
+  metadata: WorkitemRepositoryReference,
+  evidence: WorkitemRepositoryEvidence,
+): boolean {
+  return (
+    metadata.name === evidence.name &&
+    metadata.path === evidence.path &&
+    metadata.repository === evidence.repository
+  );
+}
+
+type RepositoryEvidenceReadResult = {
+  artifact: WorkitemArtifactState;
+  repositories: WorkitemRepositoryEvidence[];
+};
+
+function unresolvedRepositoryEvidence(
+  metadata: WorkitemMetadata,
+): WorkitemRepositoryEvidence[] {
+  return metadata.repositories.map((repository) => ({
+    ...repository,
+    branch: null,
+    commit: null,
+    mergeRequest: null,
+    ci: null,
+  }));
+}
+
+function repositoryEvidenceDiagnostic(
+  metadata: WorkitemMetadata,
+  state: "missing" | "invalid",
+  detail?: string,
+): RepositoryEvidenceReadResult {
+  return {
+    artifact: {
+      path: "repositories.yaml",
+      state,
+      ...(detail === undefined ? {} : { detail }),
+    },
+    repositories: unresolvedRepositoryEvidence(metadata),
+  };
+}
+
+/**
+ * These fields can later affect repository navigation or be rendered in a
+ * handoff. Reject unsafe paths and remotes outright rather than treating them
+ * as ordinary incomplete evidence.
+ */
+function hasUnsafeRepositoryEvidence(value: unknown): boolean {
+  if (!isRecord(value)) {
+    return false;
+  }
+  if (value.repository !== undefined && !isSafeExternalAssetSource(value.repository)) {
+    return true;
+  }
+  return (
+    typeof value.path === "string" &&
+    (!safeRepositoryPath(value.path) || isControlText(value.path))
+  );
+}
+
+function matchRepositoryEvidenceByName(
+  metadata: WorkitemMetadata,
+  repositories: readonly WorkitemRepositoryEvidence[],
+): { repositories: WorkitemRepositoryEvidence[] } | { detail: string } {
+  const evidenceByName = new Map<string, WorkitemRepositoryEvidence>();
+  for (const repository of repositories) {
+    if (evidenceByName.has(repository.name)) {
+      return { detail: "duplicate repository target" };
+    }
+    evidenceByName.set(repository.name, repository);
+  }
+
+  const targetsByName = new Map(metadata.repositories.map((repository) => [repository.name, repository]));
+  for (const repository of repositories) {
+    const target = targetsByName.get(repository.name);
+    if (target === undefined) {
+      return { detail: "unknown repository target" };
+    }
+    if (!sameRepositoryReference(target, repository)) {
+      return { detail: "repository target does not match workitem" };
+    }
+  }
+
+  const orderedRepositories: WorkitemRepositoryEvidence[] = [];
+  for (const target of metadata.repositories) {
+    const repository = evidenceByName.get(target.name);
+    if (repository === undefined) {
+      return { detail: "missing repository target" };
+    }
+    orderedRepositories.push(repository);
+  }
+  return { repositories: orderedRepositories };
 }
 
 function normalizeRepositories(input: WorkitemCreateInput): WorkitemRepositoryReference[] {
@@ -344,12 +551,17 @@ function metadataFor(
   key: string,
   jiraUrl: string,
   fingerprint: string,
+  updatedAt: string | undefined,
   repositories: WorkitemRepositoryReference[],
 ): WorkitemMetadata {
   return {
     schemaVersion: 1,
     key,
-    jira: { url: jiraUrl, fingerprint },
+    jira: {
+      url: jiraUrl,
+      fingerprint,
+      ...(updatedAt === undefined ? {} : { updatedAt }),
+    },
     repositories,
   };
 }
@@ -386,6 +598,7 @@ export async function createWorkitem(
   const key = validateWorkitemKey(input.key);
   const jiraUrl = validateJiraUrl(input.jiraUrl);
   const fingerprint = validateFingerprint(input.fingerprint);
+  const updatedAt = validateUpdatedAt(input.updatedAt);
   const repositories = normalizeRepositories(input);
   for (const repository of repositories) {
     // This checks both lexical traversal and existing escaping symlinks.
@@ -413,7 +626,7 @@ export async function createWorkitem(
     await mkdir(decisionsPath);
 
     const templates = await loadTemplates();
-    const metadata = metadataFor(key, jiraUrl, fingerprint, repositories);
+    const metadata = metadataFor(key, jiraUrl, fingerprint, updatedAt, repositories);
     const values = {
       KEY: key,
       JIRA_URL: jiraUrl,
@@ -445,9 +658,10 @@ function normalizeMetadata(value: unknown): WorkitemMetadata | undefined {
     value.schemaVersion !== 1 ||
     typeof value.key !== "string" ||
     !isRecord(value.jira) ||
-    !hasOnlyKeys(value.jira, ["url", "fingerprint"]) ||
+    !hasOnlyKeys(value.jira, ["url", "fingerprint", "updatedAt"]) ||
     typeof value.jira.url !== "string" ||
     typeof value.jira.fingerprint !== "string" ||
+    (value.jira.updatedAt !== undefined && typeof value.jira.updatedAt !== "string") ||
     !Array.isArray(value.repositories)
   ) {
     return undefined;
@@ -456,6 +670,7 @@ function normalizeMetadata(value: unknown): WorkitemMetadata | undefined {
     const key = validateWorkitemKey(value.key);
     const jiraUrl = validateJiraUrl(value.jira.url);
     const fingerprint = validateFingerprint(value.jira.fingerprint);
+    const updatedAt = validateUpdatedAt(value.jira.updatedAt as string | undefined);
     const repositories = normalizeRepositories({
       key,
       jiraUrl,
@@ -465,12 +680,83 @@ function normalizeMetadata(value: unknown): WorkitemMetadata | undefined {
     return {
       schemaVersion: 1,
       key,
-      jira: { url: jiraUrl, fingerprint },
+      jira: {
+        url: jiraUrl,
+        fingerprint,
+        ...(updatedAt === undefined ? {} : { updatedAt }),
+      },
       repositories,
     };
   } catch {
     return undefined;
   }
+}
+
+async function readWorkitemRepositoryEvidence(
+  repositoryRoot: string,
+  key: string,
+  metadata: WorkitemMetadata,
+): Promise<RepositoryEvidenceReadResult> {
+  const relativePath = workitemRelativePath(key, "repositories.yaml");
+  await assertNoSymbolicLinkComponents(repositoryRoot, relativePath);
+  let path: string;
+  try {
+    path = await resolveExistingPathWithinRoot(repositoryRoot, relativePath);
+  } catch (error: unknown) {
+    if (error instanceof SaberError) {
+      throw error;
+    }
+    if (isMissingPath(error)) {
+      return repositoryEvidenceDiagnostic(metadata, "missing");
+    }
+    return repositoryEvidenceDiagnostic(metadata, "invalid", "repository evidence is unavailable");
+  }
+
+  let status;
+  try {
+    status = await lstat(path);
+  } catch {
+    return repositoryEvidenceDiagnostic(metadata, "invalid", "repository evidence is unavailable");
+  }
+  if (status.isSymbolicLink()) {
+    throw new SaberError(`workitem ${key} has invalid repository evidence`, 2);
+  }
+  if (!status.isFile()) {
+    return repositoryEvidenceDiagnostic(metadata, "invalid", "invalid repository evidence");
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = parse(await readFile(path, "utf8"));
+  } catch {
+    return repositoryEvidenceDiagnostic(metadata, "invalid", "invalid repository evidence");
+  }
+  if (
+    !isRecord(parsed) ||
+    !hasOnlyKeys(parsed, ["schemaVersion", "repositories"]) ||
+    parsed.schemaVersion !== 1 ||
+    !Array.isArray(parsed.repositories)
+  ) {
+    return repositoryEvidenceDiagnostic(metadata, "invalid", "invalid repository evidence");
+  }
+
+  const repositories: WorkitemRepositoryEvidence[] = [];
+  for (const rawRepository of parsed.repositories) {
+    if (hasUnsafeRepositoryEvidence(rawRepository)) {
+      throw new SaberError(`workitem ${key} has invalid repository evidence`, 2);
+    }
+    try {
+      repositories.push(normalizeRepositoryEvidence(rawRepository));
+    } catch {
+      return repositoryEvidenceDiagnostic(metadata, "invalid", "invalid repository evidence");
+    }
+  }
+
+  const matched = matchRepositoryEvidenceByName(metadata, repositories);
+  if ("detail" in matched) {
+    return repositoryEvidenceDiagnostic(metadata, "invalid", matched.detail);
+  }
+  return { artifact: { path: "repositories.yaml", state: "present" }, repositories: matched.repositories };
 }
 
 /** Read only canonical workitem metadata; no conversation/chat state is consulted. */
@@ -632,14 +918,19 @@ export async function getWorkitemStatus(
   rawKey: string,
 ): Promise<WorkitemStatusReport> {
   const metadata = await readWorkitemMetadata(repositoryRoot, rawKey);
+  const repositoryEvidence = await readWorkitemRepositoryEvidence(repositoryRoot, metadata.key, metadata);
+  const artifacts = await Promise.all(
+    requiredArtifactPaths.map((path) => artifactState(repositoryRoot, metadata.key, path)),
+  );
   return {
     key: metadata.key,
     jiraUrl: metadata.jira.url,
     fingerprint: metadata.jira.fingerprint,
-    artifacts: await Promise.all(
-      requiredArtifactPaths.map((path) => artifactState(repositoryRoot, metadata.key, path)),
+    updatedAt: metadata.jira.updatedAt ?? null,
+    artifacts: artifacts.map((artifact) =>
+      artifact.path === "repositories.yaml" ? repositoryEvidence.artifact : artifact,
     ),
-    repositories: metadata.repositories,
+    repositories: repositoryEvidence.repositories,
     handoffCount: await countHandoffs(repositoryRoot, metadata.key),
   };
 }

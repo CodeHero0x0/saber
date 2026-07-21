@@ -44,8 +44,8 @@ Commands:
   saber init [--apply --confirm] [--json]
   saber external list [--json]
   saber external update [id] [--apply --confirm] [--json]
-  saber workitem create <JIRA-KEY> --jira-url <url> --fingerprint <hash> --project <name> [--project <name>] [--json]
-  saber workitem handoff <JIRA-KEY> --role <ba|dev|qa> --summary <text> --risk <text> --next <text> [--json]
+  saber workitem create <JIRA-KEY> --jira-url <url> --fingerprint <hash> [--updated-at <ISO timestamp>] --project <name> [--project <name>] [--json]
+  saber workitem handoff <JIRA-KEY> --role <ba|dev|qa> --summary <text> --risk <text> --next <text> [--fingerprint <hash>] [--json]
   saber workitem drift <JIRA-KEY> --fingerprint <hash> [--json]
   saber workitem status <JIRA-KEY> [--json]
 `;
