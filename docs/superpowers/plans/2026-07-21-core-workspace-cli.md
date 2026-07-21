@@ -6,9 +6,24 @@
 
 **Architecture:** Use a dependency-light Node 20+ ESM CLI. A single YAML loader reads repository-owned configuration; pure validation and status functions accept injected dependencies so that Node's built-in test runner can test them without Jira, GitLab, MCP, or live project repositories. The CLI exposes only read-only commands in this milestone: `validate`, `doctor`, and `status`.
 
-**Tech Stack:** Node.js 20+, ESM JavaScript, `yaml`, Node `node:test` and `node:assert/strict`, Git CLI.
+**Tech Stack:** Node.js 20+, strict TypeScript with NodeNext modules, `yaml`, `tsx`, Node `node:test` and `node:assert/strict`, Git CLI.
 
 **Scope boundary:** This plan deliberately does not create Jira/GitLab write integrations, clone business repositories, generate Codex/Claude runtime assets, or execute L2 actions. Those are separate plans after the core contract is verified.
+
+---
+
+## TypeScript execution amendment (2026-07-22)
+
+The user requires TypeScript wherever practical. This amendment overrides the JavaScript-oriented file names and commands in the task details below:
+
+- Every source path under `src/` uses `.ts`; every test path uses `.test.ts`.
+- Source imports use NodeNext-compatible `.js` specifiers and resolve to TypeScript source during `tsx` test execution.
+- `package.json` declares `typescript`, `tsx` and `@types/node` as development dependencies, with `build`, `check`, `test` and `saber` scripts.
+- `tsconfig.json` uses `strict: true`, `module: "NodeNext"`, `moduleResolution: "NodeNext"`, `rootDir: "src"` and `outDir: "dist"`.
+- `tsx --test tests/*.test.ts` replaces direct `node --test` invocations; `tsc --noEmit` is required before each task commit.
+- The package bin points to `dist/cli.js`; `npm run build` creates the generated JavaScript artifact, which remains ignored by Git.
+
+No implementation may remain in `src/**/*.js` once Task 1 is complete.
 
 ---
 
