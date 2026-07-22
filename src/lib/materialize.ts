@@ -12,6 +12,8 @@ import {
 } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
 
+import { parse } from "yaml";
+
 import { SaberError } from "./errors.js";
 import { resolveExistingPathWithinRoot, resolveWithinRoot } from "./files.js";
 import type {
@@ -23,7 +25,13 @@ import type {
 } from "./models.js";
 import { validateRepositoryConfig } from "./validation.js";
 
-type ProjectionKind = "context" | "team-skill" | "workflow" | "external-skill";
+type ProjectionKind =
+  | "context"
+  | "core-command"
+  | "team-skill"
+  | "personal-prompt"
+  | "workflow"
+  | "external-skill";
 
 type ExternalManifestEntry = {
   id: string;
@@ -40,13 +48,15 @@ type Projection = {
 };
 
 type RuntimeManifest = {
-  schemaVersion: 1;
+  schemaVersion: 2;
   managedBy: "saber";
   tool: ToolName;
   role: RoleName;
   project: string | null;
   capabilities: string[];
+  coreCommands: string[];
   teamSkills: string[];
+  prompts: string[];
   externalSkills: string[];
   workflows: string[];
   projections: Projection[];
@@ -73,6 +83,14 @@ const externalManifestPath = ".saber/external/saber-v1/manifest.json";
 const runtimeRoot = ".saber/runtime/materialize";
 const managedPrefix = "saber--";
 const safeId = /^[a-z][a-z0-9-]{0,63}$/u;
+const coreCommandSkills = [
+  "saber",
+  "saber-intake",
+  "saber-focus",
+  "saber-status",
+  "saber-refine",
+  "saber-help",
+] as const;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -85,13 +103,15 @@ function isStringArray(value: unknown): value is string[] {
 function isRuntimeManifest(value: unknown): value is RuntimeManifest {
   return (
     isRecord(value) &&
-    value.schemaVersion === 1 &&
+    value.schemaVersion === 2 &&
     value.managedBy === "saber" &&
     (value.tool === "codex" || value.tool === "claude" || value.tool === "opencode") &&
     (value.role === "ba" || value.role === "dev" || value.role === "qa") &&
     (typeof value.project === "string" || value.project === null) &&
     isStringArray(value.capabilities) &&
+    isStringArray(value.coreCommands) &&
     isStringArray(value.teamSkills) &&
+    isStringArray(value.prompts) &&
     isStringArray(value.externalSkills) &&
     isStringArray(value.workflows) &&
     Array.isArray(value.projections) &&
@@ -100,7 +120,9 @@ function isRuntimeManifest(value: unknown): value is RuntimeManifest {
         isRecord(projection) &&
         typeof projection.name === "string" &&
         (projection.kind === "context" ||
+          projection.kind === "core-command" ||
           projection.kind === "team-skill" ||
+          projection.kind === "personal-prompt" ||
           projection.kind === "workflow" ||
           projection.kind === "external-skill") &&
         typeof projection.linkPath === "string" &&
@@ -132,7 +154,7 @@ function ensureWithin(parent: string, child: string): void {
 }
 
 function roleProfile(config: RepositoryConfig, role: RoleName): RoleProfile {
-  const profile = (config.roleProfiles ?? []).find((candidate) => candidate.id === role);
+  const profile = config.roleProfiles.find((candidate) => candidate.id === role);
   if (profile === undefined) {
     throw new SaberError(`role ${role} is not configured in saber.yaml`, 2);
   }
@@ -174,6 +196,7 @@ async function requireDirectoryWithSkill(
   repositoryRoot: string,
   relativePath: string,
   label: string,
+  expectedName: string,
 ): Promise<string> {
   try {
     const directory = await resolveExistingPathWithinRoot(repositoryRoot, relativePath);
@@ -182,7 +205,19 @@ async function requireDirectoryWithSkill(
       repositoryRoot,
       `${relativePath}/SKILL.md`,
     );
-    if (!status.isDirectory() || status.isSymbolicLink() || !(await lstat(entrypoint)).isFile()) {
+    const frontmatterMatch = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/u.exec(
+      await readFile(entrypoint, "utf8"),
+    );
+    const frontmatter = frontmatterMatch?.[1] === undefined
+      ? undefined
+      : parse(frontmatterMatch[1]) as unknown;
+    if (
+      !status.isDirectory() ||
+      status.isSymbolicLink() ||
+      !(await lstat(entrypoint)).isFile() ||
+      !isRecord(frontmatter) ||
+      frontmatter.name !== expectedName
+    ) {
       throw new Error("invalid package");
     }
     return directory;
@@ -283,6 +318,7 @@ async function externalEntries(
         repositoryRoot,
         entry.materializedPath,
         `external skill ${id}`,
+        packageId!,
       );
     } catch {
       const asset = assetId ?? id;
@@ -465,7 +501,17 @@ async function createProjection(
   }
   return {
     name,
-    kind: name.includes("--context--") ? "context" : name.includes("--workflow--") ? "workflow" : name.includes("--external-skill--") ? "external-skill" : "team-skill",
+    kind: name.includes("--context--")
+      ? "context"
+      : name.includes("--core-command--")
+        ? "core-command"
+        : name.includes("--personal-prompt--")
+          ? "personal-prompt"
+          : name.includes("--workflow--")
+            ? "workflow"
+            : name.includes("--external-skill--")
+              ? "external-skill"
+              : "team-skill",
     linkPath: `${discoveryRelativePath}/${name}`,
     sourcePath: source,
   };
@@ -476,7 +522,7 @@ function contextSkillContent(
   capabilities: readonly string[],
   project: string | undefined,
 ): string {
-  return `---\nname: saber-context-${profile.id}\ndescription: Use at the start of Saber work as the active ${profile.id.toUpperCase()} role context.\n---\n\n# Saber ${profile.id.toUpperCase()} context\n\n- Role: ${profile.id}\n- Project: ${project ?? "cross-repository workspace"}\n- Capabilities: ${capabilities.join(", ")}\n- Team skills: ${profile.teamSkills.join(", ")}\n- External skills: ${profile.externalSkills.join(", ")}\n- Workflows: ${profile.workflows.join(", ")}\n\nTreat the role as context and human responsibility, not authorization. L2 actions require an exact preview and human confirmation; L3 actions are forbidden. Read the linked role, workflow, and skill packages as needed.\n`;
+  return `---\nname: saber-context-${profile.id}\ndescription: Use at the start of Saber work as the active ${profile.id.toUpperCase()} role context.\n---\n\n# Saber ${profile.id.toUpperCase()} context\n\n- Role: ${profile.id}\n- Project: ${project ?? "cross-repository workspace"}\n- Capabilities: ${capabilities.join(", ")}\n- Team skills: ${profile.teamSkills.join(", ")}\n- External skills: ${profile.externalSkills.join(", ")}\n- Workflows: ${profile.workflows.join(", ")}\n\nSaber CLI 是供已物化技能调用的内部接口。当前默认角色只是无明确意图或工作项责任角色时的路由上下文，不是授权；实际角色由用户意图和工作项状态决定。MCP 和能力只能来自团队或个人已批准配置。L2 外部写入必须先 preview 并取得精确确认；MVP 禁止 L3 操作。按需读取已链接的角色、工作流和技能包。\n`;
 }
 
 async function writeContextPackage(
@@ -583,16 +629,53 @@ export async function materialize(
     options.capabilities,
     options.project,
   );
-  const teamSources = await Promise.all(
-    unique([...profile.teamSkills, ...(config.local?.extensions.skills ?? [])]).map(async (id) => ({
+  const coreSources = await Promise.all(
+    coreCommandSkills.map(async (id) => ({
       id,
-      source: await requireDirectoryWithSkill(repositoryRoot, `skills/${id}`, `team skill ${id}`),
+      source: await requireDirectoryWithSkill(
+        repositoryRoot,
+        `skills/${id}`,
+        `core command ${id}`,
+        id,
+      ),
+    })),
+  );
+  const effectiveTeamSkills = unique([
+    ...profile.teamSkills,
+    ...(config.local?.extensions.skills ?? []),
+  ]).filter((id) => !(coreCommandSkills as readonly string[]).includes(id));
+  const teamSources = await Promise.all(
+    effectiveTeamSkills.map(async (id) => ({
+      id,
+      source: await requireDirectoryWithSkill(
+        repositoryRoot,
+        `skills/${id}`,
+        `team skill ${id}`,
+        id,
+      ),
+    })),
+  );
+  const promptIds = unique(config.local?.extensions.prompts ?? []);
+  const promptSources = await Promise.all(
+    promptIds.map(async (id) => ({
+      id,
+      source: await requireDirectoryWithSkill(
+        repositoryRoot,
+        `prompts/${id}`,
+        `personal prompt ${id}`,
+        id,
+      ),
     })),
   );
   const workflowSources = await Promise.all(
     profile.workflows.map(async (id) => ({
       id,
-      source: await requireDirectoryWithSkill(repositoryRoot, `workflows/${id}`, `workflow ${id}`),
+      source: await requireDirectoryWithSkill(
+        repositoryRoot,
+        `workflows/${id}`,
+        `workflow ${id}`,
+        id,
+      ),
     })),
   );
   const externalSources = await externalEntries(
@@ -614,7 +697,7 @@ export async function materialize(
   await ensureLocalGitExclude(targetRoot, discoveryRelativePath);
   const effectiveProfile: RoleProfile = {
     ...profile,
-    teamSkills: unique([...profile.teamSkills, ...(config.local?.extensions.skills ?? [])]),
+    teamSkills: effectiveTeamSkills,
   };
   const contextSource = await writeContextPackage(
     repositoryRoot,
@@ -625,8 +708,16 @@ export async function materialize(
   );
   const sources: Array<{ name: string; source: string }> = [
     { name: projectionName("context", profile.id), source: contextSource },
+    ...coreSources.map((asset) => ({
+      name: projectionName("core-command", asset.id),
+      source: asset.source,
+    })),
     ...teamSources.map((asset) => ({
       name: projectionName("team-skill", asset.id),
+      source: asset.source,
+    })),
+    ...promptSources.map((asset) => ({
+      name: projectionName("personal-prompt", asset.id),
       source: asset.source,
     })),
     ...workflowSources.map((asset) => ({
@@ -666,13 +757,15 @@ export async function materialize(
     }
 
     const manifest: RuntimeManifest = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       managedBy: "saber",
       tool,
       role: profile.id,
       project: options.project ?? null,
       capabilities,
+      coreCommands: [...coreCommandSkills],
       teamSkills: [...effectiveProfile.teamSkills],
+      prompts: promptIds,
       externalSkills: [...profile.externalSkills],
       workflows: [...profile.workflows],
       projections: projections.map((projection) => ({

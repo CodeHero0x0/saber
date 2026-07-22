@@ -35,6 +35,7 @@ export type LocalConfig = {
   projects: Record<string, { repository: string }>;
   extensions: {
     skills: string[];
+    prompts: string[];
     capabilities: string[];
   };
 };
@@ -99,8 +100,7 @@ export type RepositoryConfig = {
   capabilities: Capability[];
   connectors: ConnectorConfig[];
   externalAssets: ExternalAssetsConfig;
-  /** Present in the repository configuration; optional here for backward-compatible test adapters. */
-  roleProfiles?: RoleProfile[];
+  roleProfiles: RoleProfile[];
   /** Restricted member-specific preferences loaded from optional saber.local.yaml. */
   local?: LocalConfig;
 };

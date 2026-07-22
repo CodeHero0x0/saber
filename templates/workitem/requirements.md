@@ -1,24 +1,26 @@
-# Requirements — {{KEY}}
+# 需求澄清产出 - {{KEY}}
 
-## Jira source
+## 输入来源
 
-- Key: `{{KEY}}`
-- URL: <{{JIRA_URL}}>
-- Fingerprint: `{{FINGERPRINT}}`
+- 类型：`{{SOURCE_KIND}}`
+- 标题：{{SOURCE_TITLE}}
+- 来源：{{SOURCE_ORIGIN}}
+- 快照：`intake.md`
+- 指纹：`{{FINGERPRINT}}`
 
-## Confirmed scope
+## 已确认范围
 
-- [ ] Record the clarified business outcome and in-scope behavior.
-- [ ] Record measurable acceptance criteria for every affected repository.
+- [ ] 记录经澄清的业务目标和范围内行为。
+- [ ] 为每个受影响仓库记录可度量的验收标准。
 
-## Out of scope
+## 非范围
 
-- [ ] Record explicitly deferred behavior and non-goals.
+- [ ] 明确记录延期事项和非目标。
 
-## Open questions
+## 未决问题
 
-- [ ] Record the owner, decision needed, and deadline for each open question.
+- [ ] 记录每个问题的责任人、所需决策和期限。
 
-## Acceptance
+## BA 确认
 
-- [ ] BA confirms the scope and acceptance criteria before development starts.
+- [ ] BA 在开发开始前确认范围和验收标准。

@@ -1,5 +1,9 @@
+import { lstat, readFile } from "node:fs/promises";
+import { relative, resolve } from "node:path";
+
 import { loadRepositoryConfig } from "../lib/config.js";
 import { SaberError } from "../lib/errors.js";
+import { resolveWithinRoot } from "../lib/files.js";
 import type { RepositoryConfig } from "../lib/models.js";
 import { validateRepositoryConfig } from "../lib/validation.js";
 import {
@@ -30,10 +34,13 @@ type ParsedOptions = {
 
 type CreateRequest = {
   action: "create";
-  key: string;
-  jiraUrl: string;
-  fingerprint: string;
-  updatedAt?: string;
+  key?: string;
+  sourceType: string;
+  sourceTitle: string;
+  sourceFile: string;
+  sourceOrigin?: string;
+  capturedAt?: string;
+  references: string[];
   projects: string[];
   json: boolean;
 };
@@ -126,7 +133,7 @@ function singleValue(options: ParsedOptions, flag: string): string {
 
 function oneKey(options: ParsedOptions, command: string): string {
   if (options.positionals.length !== 1 || options.positionals[0] === undefined) {
-    throw new SaberError(`workitem ${command} requires exactly one Jira key`, 2);
+    throw new SaberError(`workitem ${command} requires exactly one workitem key`, 2);
   }
   return options.positionals[0];
 }
@@ -139,21 +146,30 @@ function parseWorkitemRequest(argv: readonly string[]): WorkitemRequest {
 
   if (action === "create") {
     const options = parseOptions(rest, {
-      "--jira-url": {},
-      "--fingerprint": {},
-      "--updated-at": {},
+      "--source-type": {},
+      "--source-title": {},
+      "--source-file": {},
+      "--source-origin": {},
+      "--captured-at": {},
+      "--source-reference": { repeatable: true },
       "--project": { repeatable: true },
     });
     const projects = options.values.get("--project") ?? [];
     if (projects.length === 0) {
       throw new SaberError("workitem create requires at least one --project", 2);
     }
+    if (options.positionals.length > 1) {
+      throw new SaberError("workitem create accepts at most one workitem key", 2);
+    }
     return {
       action,
-      key: oneKey(options, action),
-      jiraUrl: singleValue(options, "--jira-url"),
-      fingerprint: singleValue(options, "--fingerprint"),
-      updatedAt: options.values.get("--updated-at")?.[0],
+      key: options.positionals[0],
+      sourceType: singleValue(options, "--source-type"),
+      sourceTitle: singleValue(options, "--source-title"),
+      sourceFile: singleValue(options, "--source-file"),
+      sourceOrigin: options.values.get("--source-origin")?.[0],
+      capturedAt: options.values.get("--captured-at")?.[0],
+      references: [...(options.values.get("--source-reference") ?? [])],
       projects: [...projects],
       json: options.flags.has("--json"),
     };
@@ -245,10 +261,10 @@ function formatDrift(report: Awaited<ReturnType<typeof compareWorkitemFingerprin
     return `Workitem ${report.key} source fingerprint is current.\n`;
   }
   return [
-    `Workitem ${report.key} is paused because its Jira source fingerprint changed.`,
+    `Workitem ${report.key} is paused because its source fingerprint changed.`,
     `saved fingerprint: ${report.savedFingerprint}`,
     `current fingerprint: ${report.currentFingerprint}`,
-    "recovery: review the Jira change with a human, refresh the evidence pack as needed, then rerun drift.",
+    "recovery: review the source change with a human, refresh the evidence pack as needed, then rerun drift.",
     "",
   ].join("\n");
 }
@@ -256,9 +272,11 @@ function formatDrift(report: Awaited<ReturnType<typeof compareWorkitemFingerprin
 function formatStatus(report: WorkitemStatusReport): string {
   const lines = [
     `Workitem ${report.key}:`,
-    `- Jira: ${report.jiraUrl}`,
+    `- Source: ${report.source.kind} - ${report.source.title}`,
+    `- Origin: ${report.source.origin ?? "local snapshot"}`,
+    `- Snapshot: ${report.source.snapshot}`,
     `- Fingerprint: ${report.fingerprint}`,
-    `- Jira updated at: ${report.updatedAt ?? "unknown"}`,
+    `- Captured at: ${report.source.capturedAt}`,
     `- Workflow: ${report.workflow.state}`,
     `- Responsible role: ${report.workflow.role ?? "none"}`,
     `- Loop iteration: ${report.workflow.iteration}`,
@@ -290,6 +308,25 @@ function requestedJson(argv: readonly string[]): boolean {
   return argv.includes("--json");
 }
 
+async function readSourceFile(cwd: string, relativePath: string): Promise<string> {
+  const canonical = resolveWithinRoot(cwd, relativePath);
+  const lexical = resolve(cwd, relativePath);
+  let current = resolve(cwd);
+  for (const component of relative(current, lexical).split(/[\\/]/u)) {
+    if (component.length === 0) continue;
+    current = resolve(current, component);
+    const status = await lstat(current);
+    if (status.isSymbolicLink()) {
+      throw new SaberError("--source-file must not contain symbolic links", 2);
+    }
+  }
+  const sourceStatus = await lstat(canonical);
+  if (!sourceStatus.isFile()) {
+    throw new SaberError("--source-file must be a regular file", 2);
+  }
+  return readFile(canonical, "utf8");
+}
+
 function errorResult(error: unknown, json: boolean): WorkitemCommandResult {
   const message = error instanceof SaberError ? error.message : "workitem command failed";
   const exitCode = error instanceof SaberError ? error.exitCode : 1;
@@ -314,11 +351,18 @@ export async function runWorkitemCommand(
       const config = await loadConfig(cwd);
       validateConfig(config);
       const repositories = repositoryReferences(config, request.projects);
+      const sourceContent = await readSourceFile(cwd, request.sourceFile);
       const metadata = await createWorkitem(cwd, {
-        key: request.key,
-        jiraUrl: request.jiraUrl,
-        fingerprint: request.fingerprint,
-        updatedAt: request.updatedAt,
+        ...(request.key === undefined ? {} : { key: request.key }),
+        source: {
+          kind: request.sourceType,
+          title: request.sourceTitle,
+          content: sourceContent,
+          ...(request.sourceOrigin === undefined ? {} : { origin: request.sourceOrigin }),
+          ...(request.capturedAt === undefined ? {} : { capturedAt: request.capturedAt }),
+          references: request.references,
+        },
+        now: dependencies.now?.(),
         repositories,
       });
       const result = { key: metadata.key, action: "created" as const, repositories: metadata.repositories };

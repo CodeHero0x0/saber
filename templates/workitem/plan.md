@@ -2,7 +2,7 @@
 
 ## Implementation sequence
 
-1. [ ] Confirm the Jira fingerprint and the approved requirements.
+1. [ ] Confirm the source fingerprint and the approved requirements.
 2. [ ] Complete prerequisite work in each target repository.
 3. [ ] Implement the smallest safe change per repository.
 4. [ ] Record branch, commit, MR, and CI references in `repositories.yaml`.

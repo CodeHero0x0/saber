@@ -1,6 +1,6 @@
 ---
 name: openspec
-description: Use when a proposed change needs an explicit, reviewable specification lifecycle: explore, propose, apply, then archive.
+description: "Use when a proposed change needs an explicit, reviewable specification lifecycle: explore, propose, apply, then archive."
 ---
 
 # OpenSpec change lifecycle

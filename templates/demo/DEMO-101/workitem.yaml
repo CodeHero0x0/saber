@@ -1,9 +1,13 @@
-schemaVersion: 2
+schemaVersion: 3
 key: DEMO-101
-jira:
-  url: https://jira.example.test/browse/DEMO-101
-  fingerprint: sha256:demo-order-note-v1
-  updatedAt: 2026-07-22T01:00:00.000Z
+source:
+  kind: chat
+  title: 订单备注字符上限
+  snapshot: intake.md
+  fingerprint: sha256:3c01e2fead05c8a2c841f4d6b9fe51b2b31b7927de236ab45767c759122712cb
+  capturedAt: 2026-07-22T01:00:00.000Z
+  references:
+    - 产品群聊/订单体验讨论/2026-07-22
 repositories:
   - name: frontend
     path: projects/frontend

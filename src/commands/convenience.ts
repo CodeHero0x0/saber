@@ -94,29 +94,6 @@ const toolLabels: Record<ToolName, string> = {
   opencode: "OpenCode",
 };
 
-function commonCommands(role: RoleName): string[] {
-  if (role === "ba") return [
-    "saber open <JIRA-KEY>",
-    "saber next <JIRA-KEY> --result ready --fingerprint <hash>",
-    "saber next <JIRA-KEY> --result accept --fingerprint <hash>",
-    "saber next <JIRA-KEY> --result reject",
-    "saber pause <JIRA-KEY> --reason <text>",
-  ];
-  if (role === "qa") return [
-    "saber open <JIRA-KEY>",
-    "saber next <JIRA-KEY> --result pass",
-    "saber next <JIRA-KEY> --result fail",
-    "saber next <JIRA-KEY> --result blocked",
-    "saber loop <JIRA-KEY>",
-  ];
-  return [
-    "saber open <JIRA-KEY>",
-    "saber next <JIRA-KEY> --result ready",
-    "saber next <JIRA-KEY> --result blocked",
-    "saber action preview <capability> --payload <json-file>",
-  ];
-}
-
 function formatOpen(report: WorkitemStatusReport): string {
   const missing = report.artifacts.filter((artifact) => artifact.state !== "present");
   return [
@@ -124,8 +101,10 @@ function formatOpen(report: WorkitemStatusReport): string {
     `- State: ${report.workflow.state}`,
     `- Role: ${report.workflow.role ?? "none"}`,
     `- Iteration: ${report.workflow.iteration}`,
-    `- Jira: ${report.jiraUrl}`,
-    `- Fingerprint: ${report.fingerprint}`,
+    `- Source: ${report.source.kind} - ${report.source.title}`,
+    ...(report.source.origin === undefined ? [] : [`- Origin: ${report.source.origin}`]),
+    `- Snapshot: ${report.source.snapshot}`,
+    `- Fingerprint: ${report.source.fingerprint}`,
     `- Artifacts: ${report.artifacts.map(({ path, state }) => `${path}=${state}`).join(", ")}`,
     `- Missing evidence: ${missing.length === 0 ? "none" : missing.map(({ path }) => path).join(", ")}`,
     `- Handoffs: ${report.handoffCount}`,
@@ -168,13 +147,27 @@ async function runUse(
   };
   const runtime = await (dependencies.materialize ?? materialize)(cwd, config, materializeOptions);
   const start = `${tool} .`;
-  const common = commonCommands(role);
-  const result = { role, tool, project: runtime.project, discoveryRoot: runtime.discoveryRoot, start, common };
+  const recommendedSkills = [...runtime.teamSkills, ...runtime.externalSkills];
+  const result = {
+    tool,
+    defaultRole: role,
+    installedCommands: runtime.coreCommands,
+    recommendedSkills,
+    start,
+  };
   return options.flags.has("--json")
     ? { exitCode: 0, stdout: asJson(result), stderr: "" }
     : {
         exitCode: 0,
-        stdout: `Role ${role.toUpperCase()} is ready for ${toolLabels[tool]}.\nStart: ${start}\nCommon:\n${common.map((item) => `- ${item}`).join("\n")}\n`,
+        stdout: [
+          "Saber 物化完成。",
+          `- 工具: ${toolLabels[tool]}`,
+          `- 默认角色: ${role.toUpperCase()}`,
+          `- 已安装命令: ${runtime.coreCommands.join(", ")}`,
+          `- 推荐技能: ${recommendedSkills.length === 0 ? "无" : recommendedSkills.join(", ")}`,
+          `- 启动方式: ${start}`,
+          "",
+        ].join("\n"),
         stderr: "",
       };
 }

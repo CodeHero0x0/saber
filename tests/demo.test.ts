@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { access, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -25,7 +26,26 @@ async function filesBelow(root: string): Promise<string[]> {
 
 test("completed DEMO-101 records every BA Dev QA stage and one fix loop", async () => {
   const root = join(repositoryRoot, "examples", "mock-project");
+  const workitemPath = join(root, "workitems", "DEMO-101");
+  const metadata = parse(await readFile(join(workitemPath, "workitem.yaml"), "utf8"));
   const report = await getWorkitemStatus(root, "DEMO-101");
+
+  assert.equal(metadata.schemaVersion, 3);
+  assert.equal(metadata.source.kind, "chat");
+  assert.equal(metadata.source.snapshot, "intake.md");
+  assert.equal(typeof metadata.source.title, "string");
+  assert.match(metadata.source.fingerprint, /^sha256:/u);
+  assert.equal(metadata.source.capturedAt, "2026-07-22T01:00:00.000Z");
+  assert.ok(Array.isArray(metadata.source.references));
+  assert.ok(metadata.source.references.length > 0);
+  assert.equal("jira" in metadata, false);
+  const intake = await readFile(join(workitemPath, "intake.md"), "utf8");
+  assert.match(intake, /订单备注/u);
+  assert.match(intake, /200/u);
+  assert.equal(
+    metadata.source.fingerprint,
+    `sha256:${createHash("sha256").update(intake, "utf8").digest("hex")}`,
+  );
 
   assert.equal(report.workflow.state, "done");
   assert.equal(report.workflow.iteration, 1);
@@ -41,7 +61,7 @@ test("completed DEMO-101 records every BA Dev QA stage and one fix loop", async 
     ],
   );
   assert.equal(report.handoffCount, 6);
-  for (const artifact of ["requirements.md", "design.md", "plan.md", "tests.md", "acceptance.md"]) {
+  for (const artifact of ["intake.md", "requirements.md", "design.md", "plan.md", "tests.md", "acceptance.md"]) {
     const content = await readFile(join(root, "workitems", "DEMO-101", artifact), "utf8");
     assert.match(content, /[\u4E00-\u9FFF]/u, `${artifact} should explain the role output in Chinese`);
   }
@@ -58,6 +78,17 @@ test("demo assets contain parseable YAML and no credential-bearing URLs", async 
   for (const path of yamlFiles) {
     const content = await readFile(join(repositoryRoot, path), "utf8");
     assert.ok(parse(content), `${path} must contain parseable YAML`);
+  }
+
+  for (const workitem of [
+    "examples/mock-project/workitems/DEMO-101/workitem.yaml",
+    "templates/demo/DEMO-101/workitem.yaml",
+  ]) {
+    const metadata = parse(await readFile(join(repositoryRoot, workitem), "utf8"));
+    assert.equal(metadata.schemaVersion, 3, `${workitem} must use schemaVersion 3`);
+    assert.equal(metadata.source.kind, "chat", `${workitem} must demonstrate chat intake`);
+    assert.equal(metadata.source.snapshot, "intake.md");
+    assert.equal("jira" in metadata, false, `${workitem} must not keep the legacy jira field`);
   }
 
   const assetFiles = [
@@ -88,9 +119,40 @@ test("demo command creates a fresh BA-first workitem and open plus loop can read
     assert.equal(loop.exitCode, 0, loop.stderr);
     assert.match(loop.stdout, /\* ba-clarify/u);
     assert.match(loop.stdout, /History: none/u);
+    await access(join(root, "workitems", "DEMO-101", "intake.md"));
     await access(join(root, "workitems", "DEMO-101", "acceptance.md"));
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("user docs expose conversational Saber entry points instead of workflow CLI", async () => {
+  const readme = await readFile(join(repositoryRoot, "README.md"), "utf8");
+  for (const command of ["/saber", "/saber-intake", "/saber-focus", "/saber-status", "/saber-refine", "/saber-help"]) {
+    assert.match(readme, new RegExp(command.replace("/", "\\/"), "u"));
+  }
+  assert.match(readme, /仓库管理员/u);
+  assert.match(readme, /业务用户/u);
+  assert.match(readme, /精确确认 token/u);
+  assert.match(readme, /L3.+禁止/u);
+
+  const roleAndWorkflowDocs = [
+    "roles/ba.md",
+    "roles/dev.md",
+    "roles/qa.md",
+    "workflows/requirements/SKILL.md",
+    "workflows/develop/SKILL.md",
+    "workflows/test/SKILL.md",
+    "workflows/fix/SKILL.md",
+  ];
+  for (const path of roleAndWorkflowDocs) {
+    const content = await readFile(join(repositoryRoot, path), "utf8");
+    assert.doesNotMatch(
+      content,
+      /^\s*(?:npm run saber -- )?saber (?:open|next|loop|pause|resume)\b/gmu,
+      `${path} must not ask business users to drive workflow CLI`,
+    );
+    assert.match(content, /(?:后台|internal|内部)/u, `${path} should describe tool-owned workflow calls`);
   }
 });
 

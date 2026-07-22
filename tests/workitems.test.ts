@@ -34,8 +34,19 @@ import { SaberError } from "../src/lib/errors.js";
 import type { RepositoryConfig } from "../src/lib/models.js";
 import { transition } from "../src/lib/workflow-loop.js";
 
-const jiraUrl = "https://jira.example.test/browse/PROJ-123";
-const fingerprint = "sha256:0123456789abcdef";
+const sourceContent = "# 已确认的需求输入\n\n订单备注最多 200 个字符。\n";
+const fingerprint = "sha256:711bcd69b829af473679233b188356782ceb4d9e425225846984f99bc548649e";
+const source = {
+  kind: "chat" as const,
+  title: "订单备注长度需求",
+  content: sourceContent,
+  capturedAt: "2026-07-22T00:00:00.000Z",
+  references: ["docs/order-note.md"],
+};
+
+function workitemInput(key = "PROJ-123") {
+  return { key, source, repositories };
+}
 
 const repositories: WorkitemRepositoryReference[] = [
   {
@@ -82,18 +93,14 @@ test("workitem create writes the complete cross-repository evidence pack", async
   const root = await temporaryRoot();
 
   try {
-    await createWorkitem(root, {
-      key: "PROJ-123",
-      jiraUrl,
-      fingerprint,
-      repositories,
-    });
+    await createWorkitem(root, workitemInput());
 
     const workitemRoot = join(root, "workitems", "PROJ-123");
     assert.deepEqual((await readdir(workitemRoot)).sort(), [
       "decisions",
       "design.md",
       "handoffs",
+      "intake.md",
       "plan.md",
       "repositories.yaml",
       "requirements.md",
@@ -117,7 +124,7 @@ test("workitem create writes the complete cross-repository evidence pack", async
       schemaVersion: number;
       workflow: { state: string; role: string; iteration: number; history: unknown[]; updatedAt: string };
     };
-    assert.equal(metadata.schemaVersion, 2);
+    assert.equal(metadata.schemaVersion, 3);
     assert.deepEqual(
       { ...metadata.workflow, updatedAt: "<timestamp>" },
       {
@@ -133,7 +140,8 @@ test("workitem create writes the complete cross-repository evidence pack", async
     const repositoryEvidence = await readFile(join(workitemRoot, "repositories.yaml"), "utf8");
     assert.match(repositoryEvidence, /frontend/u);
     assert.match(repositoryEvidence, /backend/u);
-    assert.match(await readFile(join(workitemRoot, "requirements.md"), "utf8"), /Acceptance/u);
+    assert.equal(await readFile(join(workitemRoot, "intake.md"), "utf8"), sourceContent);
+    assert.match(await readFile(join(workitemRoot, "requirements.md"), "utf8"), /BA 确认/u);
     assert.match(await readFile(join(workitemRoot, "design.md"), "utf8"), /Interface/u);
     assert.match(await readFile(join(workitemRoot, "plan.md"), "utf8"), /Verification/u);
     assert.match(await readFile(join(workitemRoot, "tests.md"), "utf8"), /Evidence/u);
@@ -146,7 +154,7 @@ test("workitem creation refuses a duplicate or an unsafe key without writing out
   const root = await temporaryRoot();
 
   try {
-    const input = { key: "PROJ-123", jiraUrl, fingerprint, repositories };
+    const input = workitemInput();
     await createWorkitem(root, input);
 
     await assert.rejects(
@@ -164,11 +172,71 @@ test("workitem creation refuses a duplicate or an unsafe key without writing out
   }
 });
 
+test("workitem creation supports every canonical source kind and computes its snapshot fingerprint", async () => {
+  for (const kind of ["chat", "jira", "document", "manual"] as const) {
+    const root = await temporaryRoot();
+    try {
+      const metadata = await createWorkitem(root, {
+        key: `SOURCE-${kind === "chat" ? 1 : kind === "jira" ? 2 : kind === "document" ? 3 : 4}`,
+        source: { ...source, kind, ...(kind === "jira" ? { origin: "https://jira.example.test/browse/SOURCE-2" } : {}) },
+        repositories,
+      });
+      assert.equal(metadata.source.kind, kind);
+      assert.equal(metadata.source.fingerprint, fingerprint);
+      assert.equal(
+        await readFile(join(root, "workitems", metadata.key, "intake.md"), "utf8"),
+        sourceContent,
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test("workitem CLI generates the next daily SABER key and never accepts inline source text", async () => {
+  const root = await temporaryRoot();
+  const config = configWithProjects(repositories);
+  try {
+    await mkdir(join(root, "workitems", "SABER-20260722-002"), { recursive: true });
+    await writeFile(join(root, "draft.md"), sourceContent, "utf8");
+    const created = await runCli(
+      [
+        "workitem", "create",
+        "--source-type", "chat",
+        "--source-title", "订单备注",
+        "--source-file", "draft.md",
+        "--project", "frontend",
+        "--json",
+      ],
+      {
+        cwd: root,
+        dependencies: {
+          workitemCommand: {
+            loadConfig: async () => config,
+            now: () => new Date("2026-07-22T12:00:00.000Z"),
+          },
+        },
+      },
+    );
+    assert.equal(created.exitCode, 0, created.stdout);
+    assert.equal((JSON.parse(created.stdout) as { key: string }).key, "SABER-20260722-003");
+
+    const inline = await runCli(
+      ["workitem", "create", "--source-type", "chat", "--source-title", "x", "--source-text", "secret", "--project", "frontend"],
+      { cwd: root, dependencies: { workitemCommand: { loadConfig: async () => config } } },
+    );
+    assert.equal(inline.exitCode, 2);
+    assert.doesNotMatch(inline.stderr, /secret/u);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("workitem handoff appends a timestamped role record rather than chat history", async () => {
   const root = await temporaryRoot();
 
   try {
-    await createWorkitem(root, { key: "PROJ-123", jiraUrl, fingerprint, repositories });
+    await createWorkitem(root, workitemInput());
     const record = await appendWorkitemHandoff(root, {
       key: "PROJ-123",
       role: "dev",
@@ -195,7 +263,7 @@ test("workitem drift returns current evidence or a visible paused recovery state
   const root = await temporaryRoot();
 
   try {
-    await createWorkitem(root, { key: "PROJ-123", jiraUrl, fingerprint, repositories });
+    await createWorkitem(root, workitemInput());
 
     const current = await runCli(
       ["workitem", "drift", "PROJ-123", "--fingerprint", fingerprint, "--json"],
@@ -226,7 +294,7 @@ test("workitem status reports required artifacts and repository references only"
   const root = await temporaryRoot();
 
   try {
-    await createWorkitem(root, { key: "PROJ-123", jiraUrl, fingerprint, repositories });
+    await createWorkitem(root, workitemInput());
     const result = await runCli(["workitem", "status", "PROJ-123", "--json"], { cwd: root });
 
     assert.equal(result.exitCode, 0);
@@ -234,11 +302,18 @@ test("workitem status reports required artifacts and repository references only"
     const workflow = report.workflow as Record<string, unknown>;
     assert.deepEqual({ ...report, workflow: undefined, suggestion: undefined }, {
       key: "PROJ-123",
-      jiraUrl,
+      source: {
+        kind: "chat",
+        title: source.title,
+        snapshot: "intake.md",
+        fingerprint,
+        capturedAt: source.capturedAt,
+        references: source.references,
+      },
       fingerprint,
-      updatedAt: null,
       artifacts: [
         { path: "workitem.yaml", state: "present" },
+        { path: "intake.md", state: "present" },
         { path: "requirements.md", state: "present" },
         { path: "design.md", state: "present" },
         { path: "plan.md", state: "present" },
@@ -271,7 +346,7 @@ test("workitem status matches current repository evidence by stable name after r
   const root = await temporaryRoot();
 
   try {
-    await createWorkitem(root, { key: "PROJ-123", jiraUrl, fingerprint, repositories });
+    await createWorkitem(root, workitemInput());
     await writeFile(
       join(root, "workitems", "PROJ-123", "repositories.yaml"),
       `schemaVersion: 1\nrepositories:\n  - name: backend\n    path: projects/backend\n    repository: https://git.example.test/team/backend.git\n    branch: main\n    commit: b1c2d3e4\n    mergeRequest: "!77"\n    ci: running\n  - name: frontend\n    path: projects/frontend\n    repository: https://git.example.test/team/frontend.git\n    branch: codex/PROJ-123-api\n    commit: a1b2c3d4\n    mergeRequest: "!42"\n    ci: passed\n`,
@@ -312,7 +387,7 @@ test("workitem status reports a missing repository evidence file without failing
   const root = await temporaryRoot();
 
   try {
-    await createWorkitem(root, { key: "PROJ-123", jiraUrl, fingerprint, repositories });
+    await createWorkitem(root, workitemInput());
     await unlink(join(root, "workitems", "PROJ-123", "repositories.yaml"));
 
     const result = await runCli(["workitem", "status", "PROJ-123", "--json"], { cwd: root });
@@ -342,7 +417,7 @@ test("workitem status reports duplicate, unknown, and missing repository targets
   const root = await temporaryRoot();
 
   try {
-    await createWorkitem(root, { key: "PROJ-123", jiraUrl, fingerprint, repositories });
+    await createWorkitem(root, workitemInput());
     const evidencePath = join(root, "workitems", "PROJ-123", "repositories.yaml");
     const invalidEvidence = [
       {
@@ -388,7 +463,7 @@ test("workitem status rejects malformed repository evidence without echoing a se
   const root = await temporaryRoot();
 
   try {
-    await createWorkitem(root, { key: "PROJ-123", jiraUrl, fingerprint, repositories });
+    await createWorkitem(root, workitemInput());
     await writeFile(
       join(root, "workitems", "PROJ-123", "repositories.yaml"),
       `schemaVersion: 1\nrepositories:\n  - name: frontend\n    path: projects/frontend\n    repository: ssh://token%3Asecret@example.test/team/frontend.git\n    branch: main\n    commit: a1b2c3d4\n    mergeRequest: "!42"\n    ci: passed\n`,
@@ -409,7 +484,7 @@ test("workitem status fails closed for an unsafe repository evidence path", asyn
   const root = await temporaryRoot();
 
   try {
-    await createWorkitem(root, { key: "PROJ-123", jiraUrl, fingerprint, repositories });
+    await createWorkitem(root, workitemInput());
     await writeFile(
       join(root, "workitems", "PROJ-123", "repositories.yaml"),
       `schemaVersion: 1\nrepositories:\n  - name: frontend\n    path: ../../outside\n    repository: https://git.example.test/team/frontend.git\n    branch: main\n    commit: a1b2c3d4\n    mergeRequest: "!42"\n    ci: passed\n`,
@@ -426,21 +501,26 @@ test("workitem status fails closed for an unsafe repository evidence path", asyn
   }
 });
 
-test("workitem create persists an explicitly supplied Jira updatedAt and leaves absent input unknown", async () => {
+test("workitem CLI creates a source snapshot and normalizes capturedAt", async () => {
   const root = await temporaryRoot();
   const config = configWithProjects(repositories);
 
   try {
+    await writeFile(join(root, "draft.md"), sourceContent, "utf8");
     const result = await runCli(
       [
         "workitem",
         "create",
         "PROJ-124",
-        "--jira-url",
+        "--source-type",
+        "jira",
+        "--source-title",
+        "订单备注",
+        "--source-file",
+        "draft.md",
+        "--source-origin",
         "https://jira.example.test/browse/PROJ-124",
-        "--fingerprint",
-        fingerprint,
-        "--updated-at",
+        "--captured-at",
         "2026-07-22T08:30:45+08:00",
         "--project",
         "frontend",
@@ -452,27 +532,31 @@ test("workitem create persists an explicitly supplied Jira updatedAt and leaves 
     const status = await runCli(["workitem", "status", "PROJ-124", "--json"], { cwd: root });
     const text = await runCli(["workitem", "status", "PROJ-124"], { cwd: root });
     assert.equal(status.exitCode, 0);
-    assert.equal(
-      (JSON.parse(status.stdout) as { updatedAt: string | null }).updatedAt,
-      "2026-07-22T00:30:45.000Z",
-    );
+    assert.equal((JSON.parse(status.stdout) as { source: { capturedAt: string } }).source.capturedAt, "2026-07-22T00:30:45.000Z");
     assert.equal(text.exitCode, 0);
-    assert.match(text.stdout, /Jira updated at: 2026-07-22T00:30:45\.000Z/u);
+    assert.match(text.stdout, /Captured at: 2026-07-22T00:30:45\.000Z/u);
     const metadata = parse(await readFile(join(root, "workitems", "PROJ-124", "workitem.yaml"), "utf8")) as {
-      jira: { updatedAt?: string };
+      source: { capturedAt: string; kind: string };
     };
-    assert.equal(metadata.jira.updatedAt, "2026-07-22T00:30:45.000Z");
+    assert.deepEqual(metadata.source, {
+      kind: "jira",
+      title: "订单备注",
+      origin: "https://jira.example.test/browse/PROJ-124",
+      snapshot: "intake.md",
+      fingerprint,
+      capturedAt: "2026-07-22T00:30:45.000Z",
+      references: [],
+    });
 
     const invalid = await runCli(
       [
         "workitem",
         "create",
         "PROJ-125",
-        "--jira-url",
-        "https://jira.example.test/browse/PROJ-125",
-        "--fingerprint",
-        fingerprint,
-        "--updated-at",
+        "--source-type", "chat",
+        "--source-title", "错误日期",
+        "--source-file", "draft.md",
+        "--captured-at",
         "2026-02-30T00:00:00Z",
         "--project",
         "frontend",
@@ -486,21 +570,20 @@ test("workitem create persists an explicitly supplied Jira updatedAt and leaves 
   }
 });
 
-test("workitem status rejects credential-bearing repository metadata instead of echoing it", async () => {
+test("workitem status rejects the retired Jira schema", async () => {
   const root = await temporaryRoot();
 
   try {
-    await createWorkitem(root, { key: "PROJ-123", jiraUrl, fingerprint, repositories });
+    await createWorkitem(root, workitemInput());
     await writeFile(
       join(root, "workitems", "PROJ-123", "workitem.yaml"),
-      `schemaVersion: 1\nkey: PROJ-123\njira:\n  url: ${jiraUrl}\n  fingerprint: ${fingerprint}\nrepositories:\n  - name: frontend\n    path: projects/frontend\n    repository: ssh://token%3Asecret@example.test/team/frontend.git\n`,
+      `schemaVersion: 2\nkey: PROJ-123\njira:\n  url: https://jira.example.test/browse/PROJ-123\n  fingerprint: ${fingerprint}\nrepositories: []\nworkflow: {}\n`,
       "utf8",
     );
 
     const result = await runCli(["workitem", "status", "PROJ-123", "--json"], { cwd: root });
     assert.equal(result.exitCode, 2);
-    assert.doesNotMatch(result.stdout, /token|secret/u);
-    assert.doesNotMatch(result.stderr, /token|secret/u);
+    assert.match(result.stdout, /invalid metadata/u);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -511,15 +594,15 @@ test("workitem CLI creates from configured projects and rejects malformed argume
   const config = configWithProjects(repositories);
 
   try {
+    await writeFile(join(root, "draft.md"), sourceContent, "utf8");
     const create = await runCli(
       [
         "workitem",
         "create",
         "PROJ-123",
-        "--jira-url",
-        jiraUrl,
-        "--fingerprint",
-        fingerprint,
+        "--source-type", "chat",
+        "--source-title", "订单备注",
+        "--source-file", "draft.md",
         "--project",
         "frontend",
         "--project",
@@ -536,8 +619,8 @@ test("workitem CLI creates from configured projects and rejects malformed argume
     });
 
     for (const argv of [
-      ["workitem", "create", "PROJ-124", "--jira-url", jiraUrl, "--fingerprint", fingerprint],
-      ["workitem", "create", "PROJ-124", "--jira-url"],
+      ["workitem", "create", "PROJ-124", "--source-text", "secret", "--project", "frontend"],
+      ["workitem", "create", "PROJ-124", "--source-file"],
       ["workitem", "status", "PROJ-123", "--unknown", "--json"],
       ["workitem", "handoff", "PROJ-123", "--role", "writer", "--summary", "x", "--risk", "x", "--next", "x"],
     ]) {
@@ -556,7 +639,7 @@ test("workitem handoff with a supplied changed fingerprint pauses without writin
   const root = await temporaryRoot();
 
   try {
-    await createWorkitem(root, { key: "PROJ-123", jiraUrl, fingerprint, repositories });
+    await createWorkitem(root, workitemInput());
     const handoffsPath = join(root, "workitems", "PROJ-123", "handoffs");
     const before = await readdir(handoffsPath);
 
@@ -588,7 +671,7 @@ test("workitem handoff with a supplied changed fingerprint pauses without writin
     });
     assert.deepEqual(await readdir(handoffsPath), before);
 
-    const compatible = await runCli(
+    const withoutFingerprint = await runCli(
       [
         "workitem",
         "handoff",
@@ -604,7 +687,7 @@ test("workitem handoff with a supplied changed fingerprint pauses without writin
       ],
       { cwd: root, dependencies: { workitemCommand: { now: () => new Date("2026-07-22T09:00:00.000Z") } } },
     );
-    assert.equal(compatible.exitCode, 0);
+    assert.equal(withoutFingerprint.exitCode, 0);
     assert.deepEqual((await readdir(handoffsPath)).sort(), [
       "2026-07-22T09-00-00.000Z-dev.md",
       "README.md",
@@ -621,7 +704,7 @@ test("workitem creation rejects an escaping workitems symlink", async () => {
   try {
     await symlink(outside, join(root, "workitems"), "dir");
     await assert.rejects(
-      () => createWorkitem(root, { key: "PROJ-123", jiraUrl, fingerprint, repositories }),
+      () => createWorkitem(root, workitemInput()),
       (error: unknown) =>
         error instanceof SaberError && error.exitCode === 2 && /symbolic link|escapes repository root/u.test(error.message),
     );
@@ -669,7 +752,7 @@ test("workflow transition table rejects every unsupported role result", () => {
 test("workitem loop completes the direct BA Dev QA BA path", async () => {
   const root = await temporaryRoot();
   try {
-    await createWorkitem(root, { key: "PROJ-123", jiraUrl, fingerprint, repositories });
+    await createWorkitem(root, workitemInput());
     await advance(root, "ready", 1, true);
     await advance(root, "ready", 2);
     await advance(root, "pass", 3);
@@ -690,7 +773,7 @@ test("workitem loop completes the direct BA Dev QA BA path", async () => {
 test("workitem loop returns QA failures and BA rejections through Dev fix", async () => {
   const root = await temporaryRoot();
   try {
-    await createWorkitem(root, { key: "PROJ-123", jiraUrl, fingerprint, repositories });
+    await createWorkitem(root, workitemInput());
     await advance(root, "ready", 1, true);
     await advance(root, "ready", 2);
     await advance(root, "fail", 3);
@@ -726,7 +809,7 @@ test("workitem loop returns QA failures and BA rejections through Dev fix", asyn
 test("workitem loop pauses, detects drift, and resumes its owning role", async () => {
   const root = await temporaryRoot();
   try {
-    await createWorkitem(root, { key: "PROJ-123", jiraUrl, fingerprint, repositories });
+    await createWorkitem(root, workitemInput());
     const paused = await pauseWorkitem(root, {
       key: "PROJ-123",
       reason: "Waiting for a business decision.",
@@ -754,18 +837,19 @@ test("workitem loop pauses, detects drift, and resumes its owning role", async (
   }
 });
 
-test("schema v1 workitems read as BA clarify and upgrade on first transition", async () => {
+test("retired workitem schemas are rejected without an upgrade path", async () => {
   const root = await temporaryRoot();
   try {
-    await createWorkitem(root, { key: "PROJ-123", jiraUrl, fingerprint, repositories });
+    await createWorkitem(root, workitemInput());
     const metadataPath = join(root, "workitems", "PROJ-123", "workitem.yaml");
     const metadata = parse(await readFile(metadataPath, "utf8")) as Record<string, unknown>;
-    delete metadata.workflow;
-    metadata.schemaVersion = 1;
+    metadata.schemaVersion = 2;
     await writeFile(metadataPath, `${JSON.stringify(metadata)}\n`, "utf8");
 
-    assert.equal((await readWorkitemMetadata(root, "PROJ-123")).workflow.state, "ba-clarify");
-    await advance(root, "ready", 1, true);
+    await assert.rejects(
+      () => readWorkitemMetadata(root, "PROJ-123"),
+      (error: unknown) => error instanceof SaberError && /invalid metadata/u.test(error.message),
+    );
     assert.equal((parse(await readFile(metadataPath, "utf8")) as { schemaVersion: number }).schemaVersion, 2);
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -775,7 +859,7 @@ test("schema v1 workitems read as BA clarify and upgrade on first transition", a
 test("workflow gates leave metadata and handoffs unchanged when evidence is missing", async () => {
   const root = await temporaryRoot();
   try {
-    await createWorkitem(root, { key: "PROJ-123", jiraUrl, fingerprint, repositories });
+    await createWorkitem(root, workitemInput());
     await advance(root, "ready", 1, true);
     await unlink(join(root, "workitems", "PROJ-123", "design.md"));
     const metadataPath = join(root, "workitems", "PROJ-123", "workitem.yaml");
@@ -795,10 +879,10 @@ test("workflow gates leave metadata and handoffs unchanged when evidence is miss
   }
 });
 
-test("BA gates require a current Jira fingerprint before starting or accepting", async () => {
+test("BA gates require a current source fingerprint before starting or accepting", async () => {
   const root = await temporaryRoot();
   try {
-    await createWorkitem(root, { key: "PROJ-123", jiraUrl, fingerprint, repositories });
+    await createWorkitem(root, workitemInput());
     const metadataPath = join(root, "workitems", "PROJ-123", "workitem.yaml");
     const handoffsPath = join(root, "workitems", "PROJ-123", "handoffs");
     const initialMetadata = await readFile(metadataPath, "utf8");
@@ -833,7 +917,7 @@ test("workflow persistence rolls back metadata and handoff publication failures"
   for (const failure of ["metadata", "handoff"] as const) {
     const root = await temporaryRoot();
     try {
-      await createWorkitem(root, { key: "PROJ-123", jiraUrl, fingerprint, repositories });
+      await createWorkitem(root, workitemInput());
       const metadataPath = join(root, "workitems", "PROJ-123", "workitem.yaml");
       const handoffsPath = join(root, "workitems", "PROJ-123", "handoffs");
       const beforeMetadata = await readFile(metadataPath, "utf8");
@@ -881,7 +965,7 @@ test("workflow persistence rolls back metadata and handoff publication failures"
 test("an orphaned workflow transaction rolls back before the next read", async () => {
   const root = await temporaryRoot();
   try {
-    await createWorkitem(root, { key: "PROJ-123", jiraUrl, fingerprint, repositories });
+    await createWorkitem(root, workitemInput());
     const workitemRoot = join(root, "workitems", "PROJ-123");
     const metadataPath = join(workitemRoot, "workitem.yaml");
     const transactionRoot = join(workitemRoot, ".workflow-transaction");

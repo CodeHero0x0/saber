@@ -17,6 +17,15 @@ import { runCli } from "../src/cli.js";
 import { materialize } from "../src/lib/materialize.js";
 import type { RepositoryConfig, RoleProfile, ToolName } from "../src/lib/models.js";
 
+const coreCommands = [
+  "saber",
+  "saber-intake",
+  "saber-focus",
+  "saber-status",
+  "saber-refine",
+  "saber-help",
+] as const;
+
 async function temporaryRoot(): Promise<string> {
   return mkdtemp(join(tmpdir(), "saber-materialize-"));
 }
@@ -109,6 +118,7 @@ function config(): RepositoryConfig {
 
 async function fixture(root: string): Promise<void> {
   for (const [path, name] of [
+    ...coreCommands.map((name) => [`skills/${name}`, name]),
     ["skills/grill-me", "grill-me"],
     ["skills/superpowers", "superpowers"],
     ["workflows/requirements", "requirements"],
@@ -150,16 +160,21 @@ test("materialize projects only the selected Codex role assets", async () => {
     const result = await materialize(root, config(), { role: "dev", tool: "codex" });
     assert.equal(result.tool, "codex");
     assert.equal(result.role, "dev");
+    assert.deepEqual(result.coreCommands, coreCommands);
     assert.deepEqual(result.externalSkills, ["superpowers/writing-plans"]);
     assert.ok(result.projections.every((projection) => projection.linkPath.startsWith(".agents/skills/saber--")));
-    assert.equal(result.projections.length, 4);
+    assert.equal(result.projections.length, 10);
     for (const projection of result.projections) {
       assert.equal((await lstat(join(root, projection.linkPath))).isSymbolicLink(), true);
       assert.ok((await readlink(join(root, projection.linkPath))).length > 0);
     }
     const manifest = JSON.parse(await readFile(join(root, result.manifestPath), "utf8")) as {
+      schemaVersion: number;
+      coreCommands: string[];
       capabilities: string[];
     };
+    assert.equal(manifest.schemaVersion, 2);
+    assert.deepEqual(manifest.coreCommands, coreCommands);
     assert.deepEqual(manifest.capabilities, ["jira.read", "gitlab.mr.read"]);
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -176,12 +191,20 @@ test("materialize makes local skill and capability extensions effective", async 
       schemaVersion: 1,
       defaults: {},
       projects: {},
-      extensions: { skills: ["local-review"], capabilities: ["mysql.read"] },
+      extensions: { skills: ["saber", "local-review"], prompts: ["concise-review"], capabilities: ["mysql.read"] },
     };
+    await skill(root, "prompts/concise-review", "concise-review");
 
     const result = await materialize(root, configured, { role: "qa", tool: "codex" });
 
     assert.deepEqual(result.teamSkills, ["superpowers", "local-review"]);
+    assert.deepEqual(result.prompts, ["concise-review"]);
+    assert.ok(result.projections.some((projection) => projection.name === "saber--personal-prompt--concise-review"));
+    assert.equal(
+      result.projections.filter((projection) => projection.name === "saber--core-command--saber")
+        .length,
+      1,
+    );
     assert.deepEqual(result.capabilities, ["gitlab.mr.read", "mysql.read", "jira.read"]);
     const localProjection = result.projections.find(
       (projection) => projection.name === "saber--team-skill--local-review",
@@ -194,6 +217,31 @@ test("materialize makes local skill and capability extensions effective", async 
     );
     assert.match(context, /Capabilities: gitlab\.mr\.read, mysql\.read, jira\.read/u);
     assert.match(context, /Team skills: superpowers, local-review/u);
+    assert.match(context, /CLI.*内部接口/u);
+    assert.match(context, /默认角色.*路由上下文.*不是授权/u);
+    assert.match(context, /MCP.*批准.*配置/u);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("materialize rejects a package whose frontmatter name can shadow a core command", async () => {
+  const root = await temporaryRoot();
+  try {
+    await fixture(root);
+    await skill(root, "skills/local-review", "saber");
+    const configured = config();
+    configured.local = {
+      schemaVersion: 1,
+      defaults: {},
+      projects: {},
+      extensions: { skills: ["local-review"], prompts: [], capabilities: [] },
+    };
+
+    await assert.rejects(
+      () => materialize(root, configured, { role: "qa", tool: "codex" }),
+      /team skill local-review package is missing or invalid/u,
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -225,13 +273,15 @@ test("a tampered runtime manifest cannot unlink outside the tool discovery direc
     await writeFile(
       manifestPath,
       `${JSON.stringify({
-        schemaVersion: 1,
+        schemaVersion: 2,
         managedBy: "saber",
         tool: "codex",
         role: "dev",
         project: null,
         capabilities: [],
+        coreCommands: [...coreCommands],
         teamSkills: [],
+        prompts: [],
         externalSkills: [],
         workflows: [],
         projections: [
@@ -304,22 +354,65 @@ test("a role switch collision preserves the previous complete projection set", a
   }
 });
 
-test("all supported tools use their native discovery directory", async () => {
+test("all roles and supported tools always project the six core commands", async () => {
   const roots: Record<ToolName, string> = {
     codex: ".agents/skills",
     claude: ".claude/skills",
     opencode: ".opencode/skills",
   };
   for (const tool of Object.keys(roots) as ToolName[]) {
-    const root = await temporaryRoot();
-    try {
-      await fixture(root);
-      const result = await materialize(root, config(), { role: "qa", tool });
-      assert.equal(result.discoveryRoot, roots[tool]);
-      assert.ok(result.projections.every((projection) => projection.linkPath.startsWith(roots[tool])));
-    } finally {
-      await rm(root, { recursive: true, force: true });
+    for (const role of ["ba", "dev", "qa"] as const) {
+      const root = await temporaryRoot();
+      try {
+        await fixture(root);
+        const result = await materialize(root, config(), { role, tool });
+        assert.equal(result.discoveryRoot, roots[tool]);
+        assert.deepEqual(result.coreCommands, coreCommands);
+        assert.deepEqual(
+          result.projections
+            .filter((projection) => projection.kind === "core-command")
+            .map((projection) => projection.name),
+          coreCommands.map((id) => `saber--core-command--${id}`),
+        );
+        assert.deepEqual(result.teamSkills, profiles.find((profile) => profile.id === role)?.teamSkills);
+        assert.deepEqual(result.workflows, profiles.find((profile) => profile.id === role)?.workflows);
+        assert.ok(result.projections.every((projection) => projection.linkPath.startsWith(roots[tool])));
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
     }
+  }
+});
+
+test("materialize rejects the obsolete runtime manifest schema instead of branching", async () => {
+  const root = await temporaryRoot();
+  try {
+    await fixture(root);
+    const manifestPath = join(root, ".saber/runtime/materialize/codex/root.json");
+    await mkdir(join(root, ".saber/runtime/materialize/codex"), { recursive: true });
+    await writeFile(
+      manifestPath,
+      `${JSON.stringify({
+        schemaVersion: 1,
+        managedBy: "saber",
+        tool: "codex",
+        role: "dev",
+        project: null,
+        capabilities: [],
+        teamSkills: [],
+        externalSkills: [],
+        workflows: [],
+        projections: [],
+      })}\n`,
+      "utf8",
+    );
+
+    await assert.rejects(
+      () => materialize(root, config(), { role: "dev", tool: "codex" }),
+      /runtime manifest is not managed by Saber/u,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 });
 

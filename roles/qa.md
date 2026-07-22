@@ -13,29 +13,19 @@ kind: human-role
 
 - BA 的验收标准和未决项；
 - Dev 的变更范围、目标仓、测试命令与已知风险；
-- 可访问的构建、测试或 CI 证据。
+- 可访问的构建、测试或 CI 证据；
+- 当前来源指纹，用于确认测试期间需求未漂移。
 
 ## Output
 
 - `tests.md` 中的测试范围、执行结果、失败证据和未覆盖风险；
-- 通过、阻断或需人工决策的质量门结论；
+- 通过、阻断或失败的人工质量门结论；
 - 对复现步骤和修复优先级的清晰说明。
 
 ## Handoff
 
-向 Dev 交接可复现的缺陷、影响、证据和下一步；向 BA 交接验收结论。若测试环境、需求指纹或关键证据不可用，暂停并如实说明缺口。
+失败时向 Dev 交接可复现的缺陷、影响、证据和下一步；通过时向 BA 交接逐条验收证据。若测试环境、来源指纹或关键证据不可用，暂停并如实说明缺口。
 
-## Commands
+## Tool interaction
 
-以下命令在 Codex、Claude Code、OpenCode 中一致：
-
-```bash
-saber use qa --tool codex [--project <name>]   # 也可使用 claude 或 opencode
-saber open <JIRA-KEY>
-saber loop <JIRA-KEY>
-saber next <JIRA-KEY> --result pass        # qa-verify -> ba-accept
-saber next <JIRA-KEY> --result fail        # qa-verify -> dev-fix
-saber next <JIRA-KEY> --result blocked
-saber pause <JIRA-KEY> --reason <text>
-saber resume <JIRA-KEY>
-```
+QA 在 AI 工具中通过 `/saber`、`/saber-status` 或自然语言要求执行验证、记录失败或提交通过结论。工具在后台维护测试证据和交接，并根据 QA 的人工结论调用质量门流转接口；QA 不需要输入 `open`、`next`、`loop`、`pause` 或 `resume` CLI。

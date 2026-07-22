@@ -7,7 +7,7 @@ description: Use when confirmed requirements must be converted into a cross-repo
 
 ## Entry conditions
 
-- `requirements.md` has a current BA confirmation.
+- `requirements.md` has a current BA confirmation tied to the current source fingerprint.
 - Target repositories and their current branches are known.
 - A responsible Dev is identified.
 
@@ -15,9 +15,10 @@ description: Use when confirmed requirements must be converted into a cross-repo
 
 1. Inspect only the relevant project repositories and identify interface and sequencing dependencies.
 2. Write the smallest testable design and per-repository plan before modifying code.
-3. Implement in each project repository using that repository's normal branch and commit flow.
+3. Implement in each independent project repository using that repository's normal branch and commit flow.
 4. Run relevant local checks and record commands, results and known limitations.
-5. Create an explicit preview before any L2 action such as push or MR creation, then wait for human confirmation.
+5. Update repository evidence and create a Dev-to-QA handoff that can be reviewed without chat history.
+6. Before any L2 action such as push, MR creation or external-item update, call the preview interface and wait for the exact confirmation token bound to that preview. Never execute L3 actions.
 
 ## Artifacts
 
@@ -28,18 +29,10 @@ description: Use when confirmed requirements must be converted into a cross-repo
 
 ## Gate
 
-Each target repository has a clear owner, branch, implementation evidence and verification plan; cross-repository assumptions are documented.
+Each target repository has a clear owner, branch, implementation evidence and verification plan; cross-repository assumptions are documented. The responsible Dev explicitly records ready or blocked.
 
-States `dev-build` and `dev-fix` accept `ready` to enter `qa-verify`, or `blocked` to pause.
-
-```bash
-saber open <JIRA-KEY>
-saber next <JIRA-KEY> --result ready
-saber next <JIRA-KEY> --result blocked
-```
+The AI tool writes that conclusion through the internal workflow transition interface. Business users request design, implementation and handoff through `/saber` or natural language, without invoking state progression CLI.
 
 ## Pause condition
 
-Pause when requirements drift, a required repository is missing/dirty in a way that obscures ownership, an interface is undecided, or an L2 confirmation is absent.
-
-Use `saber pause <JIRA-KEY> --reason <text>` and resume only after the responsible Dev resolves the condition.
+Pause when requirements drift, a required repository is missing or dirty in a way that obscures ownership, an interface is undecided, or an L2 confirmation is absent. Record the condition and resume in the background only after the responsible Dev resolves it.

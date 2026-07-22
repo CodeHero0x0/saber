@@ -190,7 +190,7 @@ test("readTextWithinRoot rejects a symlink whose real target escapes the reposit
   }
 });
 
-const legacyConfig = `schemaVersion: 1
+const retiredConfig = `schemaVersion: 1
 name: Legacy
 safety:
   externalWrites: preview-and-confirm
@@ -219,15 +219,14 @@ externalSkills:
   preset: standard
 `;
 
-test("loadRepositoryConfig keeps schema v1 input compatible", async () => {
+test("loadRepositoryConfig rejects retired schema versions without a compatibility path", async () => {
   const root = await mkdtemp(join(tmpdir(), "saber-v1-config-"));
   try {
-    await writeFile(join(root, "saber.yaml"), legacyConfig, "utf8");
-    const config = await loadRepositoryConfig(root);
-    assert.equal(config.saber.name, "Legacy");
-    assert.equal(config.workspace.schemaVersion, 1);
-    assert.deepEqual(config.capabilities, []);
-    assert.equal(config.local, undefined);
+    await writeFile(join(root, "saber.yaml"), retiredConfig, "utf8");
+    await assert.rejects(
+      () => loadRepositoryConfig(root),
+      (error: unknown) => error instanceof SaberError && /schemaVersion must be 2/u.test(error.message),
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -249,13 +248,13 @@ test("standard preset returns fresh structures and schema v2 expands it", async 
       { name: "app", path: "projects/app", capabilities: ["jira.read"] },
     ]);
     assert.ok(config.capabilities.some((capability) => capability.id === "git.push"));
-    assert.deepEqual(config.roleProfiles?.map((profile) => profile.id), ["ba", "dev", "qa"]);
+    assert.deepEqual(config.roleProfiles.map((profile) => profile.id), ["ba", "dev", "qa"]);
     assert.deepEqual(config.externalAssets.assets.map((asset) => asset.id), ["superpowers", "openspec"]);
     assert.deepEqual(config.local, {
       schemaVersion: 1,
       defaults: {},
       projects: {},
-      extensions: { skills: [], capabilities: [] },
+      extensions: { skills: [], prompts: [], capabilities: [] },
     });
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -299,6 +298,7 @@ projects:
     repository: git@example.test:team/app.git
 extensions:
   skills: [personal-review]
+  prompts: [concise-review]
   capabilities: [mysql.read, external.assets.update]
 `,
       "utf8",
@@ -314,6 +314,7 @@ extensions:
     assert.deepEqual(config.local?.defaults, { role: "qa", tool: "opencode" });
     assert.deepEqual(config.local?.extensions, {
       skills: ["personal-review"],
+      prompts: ["concise-review"],
       capabilities: ["mysql.read", "external.assets.update"],
     });
   } finally {

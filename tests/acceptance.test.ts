@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { cp, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -51,6 +52,10 @@ test("approved Saber MVP path works in a fresh temporary workspace", async () =>
   try {
     await materializeExternalFixture(root);
 
+    const intake = "# PROJ-123 已确认需求\n\n前后端共同支持订单范围确认。\n";
+    const fingerprint = `sha256:${createHash("sha256").update(intake).digest("hex")}`;
+    await writeFile(join(root, "intake.md"), intake, "utf8");
+
     const validate = await runCli(["validate", "--json"], { cwd: root });
     assert.equal(validate.exitCode, 0, validate.stdout);
 
@@ -74,11 +79,15 @@ test("approved Saber MVP path works in a fresh temporary workspace", async () =>
         "workitem",
         "create",
         "PROJ-123",
-        "--jira-url",
+        "--source-type",
+        "jira",
+        "--source-title",
+        "PROJ-123 订单范围确认",
+        "--source-file",
+        "intake.md",
+        "--source-origin",
         "https://jira.example.test/browse/PROJ-123",
-        "--fingerprint",
-        "sha256:acceptance",
-        "--updated-at",
+        "--captured-at",
         "2026-07-22T08:30:00Z",
         "--project",
         "frontend",
@@ -103,7 +112,7 @@ test("approved Saber MVP path works in a fresh temporary workspace", async () =>
         "--next",
         "Dev design",
         "--fingerprint",
-        "sha256:acceptance",
+        fingerprint,
         "--json",
       ],
       { cwd: root },

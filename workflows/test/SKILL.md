@@ -17,6 +17,7 @@ description: Use when QA needs to turn confirmed acceptance criteria and a Dev h
 2. Run relevant automated and manual checks; preserve commands and stable evidence references rather than copying long logs.
 3. Distinguish passed checks, failed checks, blocked checks and untested risk.
 4. Re-check the source fingerprint before making a quality conclusion.
+5. On failure, record reproducible evidence and hand off to Dev; on pass, map every acceptance criterion to evidence and hand off to BA.
 
 ## Artifacts
 
@@ -28,17 +29,8 @@ description: Use when QA needs to turn confirmed acceptance criteria and a Dev h
 
 QA records a human-owned conclusion: pass, blocked, or fail. A pass requires evidence for every agreed acceptance criterion or a documented approved exception.
 
-State `qa-verify` accepts `pass` to enter `ba-accept`, `fail` to enter `dev-fix`, or `blocked` to pause.
-
-```bash
-saber open <JIRA-KEY>
-saber next <JIRA-KEY> --result pass
-saber next <JIRA-KEY> --result fail
-saber next <JIRA-KEY> --result blocked
-```
+The AI tool persists the conclusion through the internal workflow transition interface. QA users report results through `/saber` or natural language and do not manually invoke state progression commands.
 
 ## Pause condition
 
-Pause when the test environment is unavailable, the source fingerprint changed, evidence conflicts with the expected behavior, or a test result cannot be reproduced.
-
-Use `saber pause <JIRA-KEY> --reason <text>` and resume only after the responsible QA resolves the condition.
+Pause when the test environment is unavailable, the source fingerprint changed, evidence conflicts with expected behavior, or a test result cannot be reproduced. Record the reason and resume in the background only after the responsible QA resolves it.

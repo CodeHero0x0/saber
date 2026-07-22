@@ -17,7 +17,7 @@ Do not treat blog posts, generated text or a search snippet as authority when of
 
 ## Saber 文档草稿交接
 
-本技能只能在用户显式输入 `/grilling` 并要求结合文档时使用；`disable-model-invocation: true` 禁止模型自动调用或声称已经调用。输入为当前 Saber 草稿、待验证主张和用户选择的文档。输出需把每条结论回链到标题/URL 或路径、版本/日期、章节和适用限制，并将冲突、未知项与真人决策人交回草稿；不直接创建工作项或代替用户确认。
+本技能只能由用户显式输入 `/grill-with-docs` 触发；`disable-model-invocation: true` 禁止模型自动调用或声称已经调用。输入为当前 Saber 草稿、待验证主张和用户选择的文档。输出需把每条结论回链到标题/URL 或路径、版本/日期、章节和适用限制，并将冲突、未知项与真人决策人交回草稿；不直接创建工作项或代替用户确认。
 
 ## 可复用资产
 

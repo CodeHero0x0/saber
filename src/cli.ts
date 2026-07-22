@@ -53,11 +53,11 @@ Daily commands:
   saber setup [--apply --confirm] [--json]
   saber use <ba|dev|qa> [--tool <codex|claude|opencode>] [--project <name>] [--json]
   saber demo [DEMO-101] [--json]
-  saber open <JIRA-KEY> [--json]
-  saber loop <JIRA-KEY> [--json]
-  saber next <JIRA-KEY> --result <result> [--summary <text>] [--risk <text>] [--next <text>] [--fingerprint <hash>] [--json]
-  saber pause <JIRA-KEY> --reason <text> [--json]
-  saber resume <JIRA-KEY> [--fingerprint <hash>] [--json]
+  saber open <WORKITEM-KEY> [--json]
+  saber loop <WORKITEM-KEY> [--json]
+  saber next <WORKITEM-KEY> --result <result> [--summary <text>] [--risk <text>] [--next <text>] [--fingerprint <hash>] [--json]
+  saber pause <WORKITEM-KEY> --reason <text> [--json]
+  saber resume <WORKITEM-KEY> [--fingerprint <hash>] [--json]
 
 Advanced commands:
   saber validate [--json]
@@ -69,10 +69,10 @@ Advanced commands:
   saber action preview <capability> --payload <json-file> [--json]
   saber action execute <capability> --payload <json-file> [--confirm <preview-token>] [--json]
   saber materialize [--tool <codex|claude|opencode>] --role <ba|dev|qa> [--project <name>] [--capability <id>] [--json]
-  saber workitem create <JIRA-KEY> --jira-url <url> --fingerprint <hash> [--updated-at <ISO timestamp>] --project <name> [--project <name>] [--json]
-  saber workitem handoff <JIRA-KEY> --role <ba|dev|qa> --summary <text> --risk <text> --next <text> [--fingerprint <hash>] [--json]
-  saber workitem drift <JIRA-KEY> --fingerprint <hash> [--json]
-  saber workitem status <JIRA-KEY> [--json]
+  saber workitem create [WORKITEM-KEY] --source-type <chat|jira|document|manual> --source-title <title> --source-file <path> [--source-origin <origin>] [--captured-at <ISO timestamp>] [--source-reference <reference>] --project <name> [--json]
+  saber workitem handoff <WORKITEM-KEY> --role <ba|dev|qa> --summary <text> --risk <text> --next <text> [--fingerprint <hash>] [--json]
+  saber workitem drift <WORKITEM-KEY> --fingerprint <hash> [--json]
+  saber workitem status <WORKITEM-KEY> [--json]
 `;
 
 type ConvenienceCliDependencies = ConvenienceCommandDependencies & {

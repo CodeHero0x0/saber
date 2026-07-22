@@ -17,28 +17,21 @@ description: Use when a verified defect or failed quality gate must be reproduce
 2. Confirm whether the source requirement has drifted before choosing a fix.
 3. Implement the minimal safe correction in the affected project repository or repositories.
 4. Re-run the regression and relevant neighboring checks.
-5. Update the handoff with the cause, change, evidence and any unresolved risk.
+5. Update the plan, test evidence and handoff with the cause, change, before/after evidence and unresolved risk.
 
 ## Artifacts
 
+- Updated `workitems/<KEY>/plan.md`
 - Updated `workitems/<KEY>/tests.md`
 - Updated `workitems/<KEY>/repositories.yaml`
 - A Dev-to-QA handoff with reproduction and regression evidence
 
 ## Gate
 
-The reported defect has reproducible before/after evidence, and QA receives enough context to re-verify without reading chat history.
+The reported defect has reproducible before/after evidence, and QA receives enough context to re-verify without reading chat history. Repeated QA failures or BA rejections start another fix iteration without discarding earlier evidence.
 
-State `dev-fix` accepts `ready` to return to `qa-verify`, or `blocked` to pause. A new QA `fail` or BA `reject` starts another fix iteration without losing previous evidence.
-
-```bash
-saber open <JIRA-KEY>
-saber next <JIRA-KEY> --result ready
-saber next <JIRA-KEY> --result blocked
-```
+The responsible Dev reports ready or blocked through `/saber` or natural language. The AI tool calls the internal transition interface only after recording that conclusion; business users do not operate workflow CLI.
 
 ## Pause condition
 
-Pause when reproduction fails, the defect requires a product decision, a cross-repository contract is unclear, or an external write needs L2 confirmation.
-
-Use `saber pause <JIRA-KEY> --reason <text>` and resume only after the responsible Dev resolves the condition.
+Pause when reproduction fails, the defect requires a product decision, a cross-repository contract is unclear, or an external write lacks L2 confirmation. L2 actions require an exact confirmation token bound to the visible preview; L3 actions remain forbidden. Resume only after the responsible Dev resolves the condition.

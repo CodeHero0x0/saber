@@ -14,6 +14,15 @@ import type { MaterializeResult } from "../src/lib/materialize.js";
 import type { RepositoryConfig, RoleName, ToolName } from "../src/lib/models.js";
 import type { WorkitemStatusReport } from "../src/lib/workitems.js";
 
+const coreCommands = [
+  "saber",
+  "saber-intake",
+  "saber-focus",
+  "saber-status",
+  "saber-refine",
+  "saber-help",
+];
+
 function config(teamTool: ToolName = "codex", localTool?: ToolName): RepositoryConfig {
   return {
     saber: {
@@ -43,7 +52,7 @@ function config(teamTool: ToolName = "codex", localTool?: ToolName): RepositoryC
             schemaVersion: 1 as const,
             defaults: { tool: localTool },
             projects: {},
-            extensions: { skills: [], capabilities: [] },
+            extensions: { skills: [], prompts: [], capabilities: [] },
           },
         }),
   };
@@ -51,14 +60,16 @@ function config(teamTool: ToolName = "codex", localTool?: ToolName): RepositoryC
 
 function materialized(role: RoleName, tool: ToolName, project?: string): MaterializeResult {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     managedBy: "saber",
     role,
     tool,
     project: project ?? null,
     capabilities: [],
-    teamSkills: [],
-    externalSkills: [],
+    coreCommands,
+    teamSkills: [`${role}-recommended`],
+    prompts: [],
+    externalSkills: [`${role}-external`],
     workflows: [],
     projections: [],
     manifestPath: `.saber/runtime/materialize/${tool}/root.json`,
@@ -117,12 +128,44 @@ test("use supports all nine role and tool combinations", async () => {
 
       assert.equal(result.exitCode, 0);
       assert.deepEqual(calls, [{ role, tool }]);
-      const output = JSON.parse(result.stdout) as { tool: ToolName; start: string; common: string[] };
+      const output = JSON.parse(result.stdout) as {
+        tool: ToolName;
+        defaultRole: RoleName;
+        installedCommands: string[];
+        recommendedSkills: string[];
+        start: string;
+      };
       assert.equal(output.tool, tool);
+      assert.equal(output.defaultRole, role);
+      assert.deepEqual(output.installedCommands, coreCommands);
+      assert.deepEqual(output.recommendedSkills, [`${role}-recommended`, `${role}-external`]);
       assert.match(output.start, new RegExp(`^${tool} \\.$`));
-      assert.match(output.common.join("\n"), role === "ba" ? /accept/u : role === "qa" ? /pass/u : /action preview/u);
+      assert.deepEqual(Object.keys(output), [
+        "tool",
+        "defaultRole",
+        "installedCommands",
+        "recommendedSkills",
+        "start",
+      ]);
     }
   }
+});
+
+test("use renders only the administrator materialize report and no daily CLI suggestions", async () => {
+  const result = await runConvenienceCommand("use", ["dev", "--tool", "claude"], {
+    cwd: "/fixture",
+    dependencies: {
+      loadConfig: async () => config(),
+      materialize: async () => materialized("dev", "claude"),
+    },
+  });
+
+  assert.match(result.stdout, /工具.*Claude Code/u);
+  assert.match(result.stdout, /默认角色.*DEV/u);
+  assert.match(result.stdout, /已安装命令.*saber-intake/u);
+  assert.match(result.stdout, /推荐技能.*dev-recommended.*dev-external/u);
+  assert.match(result.stdout, /启动方式.*claude \./u);
+  assert.doesNotMatch(result.stdout, /saber (?:open|next|loop)/u);
 });
 
 test("use resolves explicit, personal, then team tool precedence and forwards a strict project", async () => {
@@ -153,9 +196,15 @@ test("use resolves explicit, personal, then team tool precedence and forwards a 
 
 const status: WorkitemStatusReport = {
   key: "ABC-1",
-  jiraUrl: "https://jira.example.test/browse/ABC-1",
-  fingerprint: "abc",
-  updatedAt: "2026-07-22T00:00:00.000Z",
+  source: {
+    kind: "jira",
+    title: "Checkout fails after payment",
+    origin: "https://jira.example.test/browse/ABC-1",
+    snapshot: "intake.md",
+    fingerprint: "abc",
+    capturedAt: "2026-07-22T00:00:00.000Z",
+    references: [],
+  },
   workflow: {
     state: "qa-verify",
     role: "qa",
@@ -177,6 +226,9 @@ test("open and loop render status, route and history without filesystem access",
   const loop = await runConvenienceCommand("loop", ["ABC-1"], { cwd: "/fixture", dependencies });
 
   assert.match(opened.stdout, /State: qa-verify/u);
+  assert.match(opened.stdout, /Source: jira - Checkout fails after payment/u);
+  assert.match(opened.stdout, /Origin: https:\/\/jira\.example\.test\/browse\/ABC-1/u);
+  assert.match(opened.stdout, /Snapshot: intake\.md/u);
   assert.match(opened.stdout, /Missing evidence: tests\.md/u);
   assert.match(opened.stdout, /Fingerprint: abc/u);
   assert.match(opened.stdout, /requirements\.md=present, tests\.md=missing/u);

@@ -23,8 +23,16 @@ user-invocable: true
 ## 执行契约
 
 1. 输出当前工作项、阶段、责任角色、已知证据、缺口和一个明确下一步。
-2. 新需求转交 `/saber-intake`；已有工作项按状态进入相应工作流。Jira 只是统一来源模型中的 `source.kind: jira`，不拥有单独的数据路径。
+2. 新需求直接执行 `/saber-intake` 的确认门禁，不要求用户再次输入辅助命令；已有工作项直接读取状态并执行责任角色对应的 `requirements | develop | test | fix` 工作流。
 3. 只读操作可直接执行。任何 L2 外部写入都必须先对完全相同的 capability 和 payload 运行 `saber action preview`，向用户展示预览，再等待用户提供该预览的精确 `confirm token`；缺失、失配或过期时停止，不得代替用户确认。
 4. L3 在 MVP 中禁止且禁用，不提供绕过方式。
 5. 不把凭证、完整聊天、大段日志或业务仓源码写入 Saber；只保存继续工作所需的确认产物与证据引用。
 
+## 后台接口
+
+- 新需求：完成 BA 追问和用户确认后，将确认草稿写入仓库内 Markdown 文件，再调用 `saber workitem create [WORKITEM-KEY] --source-type <chat|jira|document|manual> --source-title <标题> --source-file <文件> --project <项目>`；未给编号时由 Saber 自动生成。
+- 已有事项：先调用 `saber workitem status <WORKITEM-KEY> --json` 获取唯一事实状态，再读取当前阶段所需产出；不得只根据聊天猜测状态。
+- 阶段结论：真人明确给出 ready、pass、fail、accept、reject 或 blocked 后，先写完整阶段产出和交接，再由后台调用 `saber next`、`saber pause` 或 `saber resume`。BA 门禁必须携带当前来源指纹。
+- 状态查看与聚焦不写外部系统；辅助命令是同一执行契约的明确入口，不是另一套工作流。
+
+Jira 只是统一来源模型中的 `source.kind: jira`，不拥有单独的数据路径。以上 CLI 仅供已加载技能在后台调用，不展示成业务用户的操作步骤。

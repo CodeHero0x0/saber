@@ -10,6 +10,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { COPYFILE_EXCL } from "node:constants";
+import { createHash } from "node:crypto";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -67,28 +68,36 @@ export type WorkitemWorkflow = {
 };
 
 export type WorkitemMetadata = {
-  schemaVersion: 1 | 2;
+  schemaVersion: 3;
   key: string;
-  jira: {
-    url: string;
+  source: {
+    kind: WorkitemSourceKind;
+    title: string;
+    origin?: string;
+    snapshot: "intake.md";
     fingerprint: string;
-    /** Omitted until a real Jira L0 intake supplies the source updatedAt fact. */
-    updatedAt?: string;
+    capturedAt: string;
+    references: string[];
   };
   repositories: WorkitemRepositoryReference[];
   workflow: WorkitemWorkflow;
 };
 
+export const workitemSourceKinds = ["chat", "jira", "document", "manual"] as const;
+export type WorkitemSourceKind = (typeof workitemSourceKinds)[number];
+
 export type WorkitemCreateInput = {
-  key: string;
-  jiraUrl: string;
-  fingerprint: string;
-  /** A Jira-provided ISO-8601 updatedAt fact. Never synthesized from local time. */
-  updatedAt?: string;
-  /** Preferred explicit repository references, resolved by the CLI from saber.yaml. */
-  repositories?: readonly WorkitemRepositoryReference[];
-  /** Compatibility shorthand for callers that only know selected project names. */
-  projects?: readonly string[];
+  key?: string;
+  source: {
+    kind: WorkitemSourceKind | string;
+    title: string;
+    content: string;
+    origin?: string;
+    capturedAt?: string;
+    references?: readonly string[];
+  };
+  now?: Date;
+  repositories: readonly WorkitemRepositoryReference[];
 };
 
 export type WorkitemHandoffInput = {
@@ -122,10 +131,8 @@ export type WorkitemArtifactState = {
 
 export type WorkitemStatusReport = {
   key: string;
-  jiraUrl: string;
+  source: WorkitemMetadata["source"];
   fingerprint: string;
-  /** Null means the local workitem was created before an intake supplied this Jira fact. */
-  updatedAt: string | null;
   artifacts: WorkitemArtifactState[];
   repositories: WorkitemRepositoryEvidence[];
   handoffCount: number;
@@ -196,6 +203,7 @@ type WorkflowTransactionManifest = {
 
 const requiredArtifactPaths = [
   "workitem.yaml",
+  "intake.md",
   "requirements.md",
   "design.md",
   "plan.md",
@@ -207,6 +215,7 @@ const requiredArtifactPaths = [
 
 const templatePaths = [
   "workitem.yaml",
+  "intake.md",
   "requirements.md",
   "design.md",
   "plan.md",
@@ -272,8 +281,8 @@ function hasOnlyKeys(value: Record<string, unknown>, allowed: readonly string[])
 }
 
 function validateWorkitemKey(value: string): string {
-  if (!/^[A-Z][A-Z0-9_]{0,31}-[1-9][0-9]*$/u.test(value)) {
-    throw new SaberError("invalid workitem key; expected an uppercase Jira key such as PROJ-123", 2);
+  if (!/^(?:[A-Z][A-Z0-9_]{0,31}-[1-9][0-9]*|SABER-\d{8}-\d{3})$/u.test(value)) {
+    throw new SaberError("invalid workitem key; expected an uppercase key such as SABER-20260722-001", 2);
   }
   return value;
 }
@@ -287,17 +296,14 @@ function validateFingerprint(value: string): string {
 
 const isoTimestamp = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,9})?(Z|[+-]\d{2}:?\d{2})$/u;
 
-/**
- * Keep the source timestamp distinct from local command time: absent remains
- * absent, while a supplied Jira ISO timestamp is normalized to its UTC instant.
- */
-function validateUpdatedAt(value: string | undefined): string | undefined {
+/** Normalize an explicitly supplied source timestamp to its UTC instant. */
+function validateTimestamp(value: string | undefined): string | undefined {
   if (value === undefined) {
     return undefined;
   }
   const match = isoTimestamp.exec(value);
   if (match === null) {
-    throw new SaberError("invalid Jira updatedAt timestamp", 2);
+    throw new SaberError("invalid source timestamp", 2);
   }
   const year = Number(match[1]);
   const month = Number(match[2]);
@@ -320,38 +326,44 @@ function validateUpdatedAt(value: string | undefined): string | undefined {
     offsetHour > 23 ||
     offsetMinute > 59
   ) {
-    throw new SaberError("invalid Jira updatedAt timestamp", 2);
+    throw new SaberError("invalid source timestamp", 2);
   }
   const timestamp = Date.parse(value);
   if (Number.isNaN(timestamp)) {
-    throw new SaberError("invalid Jira updatedAt timestamp", 2);
+    throw new SaberError("invalid source timestamp", 2);
   }
   return new Date(timestamp).toISOString();
 }
 
-function validateJiraUrl(value: string): string {
-  if (value.length === 0 || value.length > 2_048 || isControlText(value)) {
-    throw new SaberError("invalid Jira URL", 2);
+function validateSourceKind(value: string): WorkitemSourceKind {
+  if (!workitemSourceKinds.includes(value as WorkitemSourceKind)) {
+    throw new SaberError("invalid source type; expected chat, jira, document, or manual", 2);
   }
+  return value as WorkitemSourceKind;
+}
 
-  let url: URL;
-  try {
-    url = new URL(value);
-  } catch {
-    throw new SaberError("invalid Jira URL", 2);
-  }
+function validateSourceOrigin(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  const normalized = validateShortText("source origin", value);
+  if (normalized.length > 2_048) throw new SaberError("invalid source origin", 2);
+  return normalized;
+}
 
-  if (
-    url.protocol !== "https:" ||
-    url.hostname.length === 0 ||
-    url.username.length > 0 ||
-    url.password.length > 0 ||
-    url.search.length > 0 ||
-    url.hash.length > 0
-  ) {
-    throw new SaberError("Jira URL must be credential-free HTTPS without query or fragment", 2);
+function validateSourceContent(value: string): string {
+  if (value.trim().length === 0 || value.length > 262_144 || value.includes("\0")) {
+    throw new SaberError("invalid source file content", 2);
   }
-  return url.toString();
+  return value;
+}
+
+function validateSourceReferences(values: readonly string[] | undefined): string[] {
+  if (values === undefined) return [];
+  if (values.length > 64) throw new SaberError("too many source references", 2);
+  return values.map((value) => validateShortText("source reference", value));
+}
+
+function sourceFingerprint(content: string): string {
+  return `sha256:${createHash("sha256").update(content, "utf8").digest("hex")}`;
 }
 
 function validateShortText(label: string, value: string): string {
@@ -550,19 +562,13 @@ function matchRepositoryEvidenceByName(
 }
 
 function normalizeRepositories(input: WorkitemCreateInput): WorkitemRepositoryReference[] {
-  if (input.repositories !== undefined && input.projects !== undefined) {
-    throw new SaberError("workitem creation accepts repositories or projects, not both", 2);
-  }
-  const raw =
-    input.repositories ??
-    input.projects?.map((name) => ({ name, path: `projects/${name}` }));
-  if (raw === undefined || raw.length === 0) {
+  if (input.repositories.length === 0) {
     throw new SaberError("workitem create requires at least one project", 2);
   }
 
   const names = new Set<string>();
   const repositories: WorkitemRepositoryReference[] = [];
-  for (const reference of raw) {
+  for (const reference of input.repositories) {
     const normalized = normalizeRepositoryReference(reference);
     if (names.has(normalized.name)) {
       throw new SaberError(`duplicate workitem repository ${normalized.name}`, 2);
@@ -846,19 +852,23 @@ function requiredTemplate(templates: ReadonlyMap<string, string>, path: string):
 
 function metadataFor(
   key: string,
-  jiraUrl: string,
-  fingerprint: string,
-  updatedAt: string | undefined,
+  input: WorkitemCreateInput,
   repositories: WorkitemRepositoryReference[],
 ): WorkitemMetadata {
-  const now = new Date().toISOString();
+  const capturedAt = validateTimestamp(input.source.capturedAt) ?? transitionDate(input.now);
+  const content = validateSourceContent(input.source.content);
+  const origin = validateSourceOrigin(input.source.origin);
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     key,
-    jira: {
-      url: jiraUrl,
-      fingerprint,
-      ...(updatedAt === undefined ? {} : { updatedAt }),
+    source: {
+      kind: validateSourceKind(input.source.kind),
+      title: validateShortText("source title", input.source.title),
+      ...(origin === undefined ? {} : { origin }),
+      snapshot: "intake.md",
+      fingerprint: sourceFingerprint(content),
+      capturedAt,
+      references: validateSourceReferences(input.source.references),
     },
     repositories,
     workflow: {
@@ -867,7 +877,7 @@ function metadataFor(
       iteration: 0,
       pausedFrom: null,
       pauseReason: null,
-      updatedAt: now,
+      updatedAt: capturedAt,
       history: [],
     },
   };
@@ -902,10 +912,20 @@ export async function createWorkitem(
   repositoryRoot: string,
   input: WorkitemCreateInput,
 ): Promise<WorkitemMetadata> {
+  if (input.key === undefined) {
+    await prepareWorkitemsDirectory(repositoryRoot);
+    for (let attempt = 0; attempt < 1_000; attempt += 1) {
+      const key = await nextGeneratedWorkitemKey(repositoryRoot, input.now);
+      try {
+        return await createWorkitem(repositoryRoot, { ...input, key });
+      } catch (error: unknown) {
+        if (!(error instanceof SaberError && /already exists/u.test(error.message))) throw error;
+      }
+    }
+    throw new SaberError("could not allocate a unique workitem key", 1);
+  }
   const key = validateWorkitemKey(input.key);
-  const jiraUrl = validateJiraUrl(input.jiraUrl);
-  const fingerprint = validateFingerprint(input.fingerprint);
-  const updatedAt = validateUpdatedAt(input.updatedAt);
+  const sourceContent = validateSourceContent(input.source.content);
   const repositories = normalizeRepositories(input);
   for (const repository of repositories) {
     // This checks both lexical traversal and existing escaping symlinks.
@@ -933,17 +953,25 @@ export async function createWorkitem(
     await mkdir(decisionsPath);
 
     const templates = await loadTemplates();
-    const metadata = metadataFor(key, jiraUrl, fingerprint, updatedAt, repositories);
+    const metadata = metadataFor(key, input, repositories);
     const values = {
       KEY: key,
-      JIRA_URL: jiraUrl,
-      FINGERPRINT: fingerprint,
+      SOURCE_TITLE: metadata.source.title,
+      SOURCE_KIND: metadata.source.kind,
+      SOURCE_ORIGIN: metadata.source.origin ?? "未提供",
+      FINGERPRINT: metadata.source.fingerprint,
+      INTAKE_CONTENT: sourceContent,
       WORKITEM_YAML: stringify(metadata),
       REPOSITORIES_YAML: stringify(repositoryEvidenceFor(repositories)),
     };
     for (const templatePath of templatePaths) {
       const destination = await resolveWorkitemPath(repositoryRoot, key, templatePath);
-      await writeNewFile(destination, renderTemplate(requiredTemplate(templates, templatePath), values));
+      await writeNewFile(
+        destination,
+        templatePath === "intake.md"
+          ? sourceContent
+          : renderTemplate(requiredTemplate(templates, templatePath), values),
+      );
     }
     return metadata;
   } catch (error: unknown) {
@@ -958,16 +986,24 @@ export async function createWorkitem(
   }
 }
 
-function initialWorkflow(): WorkitemWorkflow {
-  return {
-    state: "ba-clarify",
-    role: "ba",
-    iteration: 0,
-    pausedFrom: null,
-    pauseReason: null,
-    updatedAt: new Date(0).toISOString(),
-    history: [],
-  };
+async function nextGeneratedWorkitemKey(repositoryRoot: string, now: Date | undefined): Promise<string> {
+  const date = now ?? new Date();
+  if (Number.isNaN(date.getTime())) throw new SaberError("invalid workitem date", 2);
+  const day = date.toISOString().slice(0, 10).replaceAll("-", "");
+  const pattern = new RegExp(`^SABER-${day}-(\\d{3})$`, "u");
+  let highest = 0;
+  try {
+    const root = resolveWorkitemWithinRoot(repositoryRoot, "workitems");
+    await assertNoSymbolicLinkComponents(repositoryRoot, "workitems");
+    for (const entry of await readdir(root, { withFileTypes: true, encoding: "utf8" })) {
+      const match = pattern.exec(entry.name);
+      if (entry.isDirectory() && match !== null) highest = Math.max(highest, Number(match[1]));
+    }
+  } catch (error: unknown) {
+    if (!isMissingPath(error)) throw error;
+  }
+  if (highest >= 999) throw new SaberError(`workitem sequence exhausted for ${day}`, 2);
+  return `SABER-${day}-${String(highest + 1).padStart(3, "0")}`;
 }
 
 function normalizeHistoryEntry(value: unknown): WorkflowHistoryEntry | undefined {
@@ -987,7 +1023,7 @@ function normalizeHistoryEntry(value: unknown): WorkflowHistoryEntry | undefined
       to: value.to,
       result: value.result,
       role: validateRole(value.role),
-      recordedAt: validateUpdatedAt(value.recordedAt)!,
+      recordedAt: validateTimestamp(value.recordedAt)!,
       summary: validateShortText("workflow history summary", value.summary),
     };
   } catch {
@@ -1022,7 +1058,7 @@ function normalizeWorkflow(value: unknown): WorkitemWorkflow | undefined {
       iteration: value.iteration as number,
       pausedFrom: value.state === "paused" ? value.pausedFrom as ActiveWorkflowState : null,
       pauseReason: value.pauseReason === null ? null : validateShortText("workflow pause reason", value.pauseReason),
-      updatedAt: validateUpdatedAt(value.updatedAt)!,
+      updatedAt: validateTimestamp(value.updatedAt)!,
       history: history as WorkflowHistoryEntry[],
     };
   } catch {
@@ -1033,38 +1069,49 @@ function normalizeWorkflow(value: unknown): WorkitemWorkflow | undefined {
 function normalizeMetadata(value: unknown): WorkitemMetadata | undefined {
   if (
     !isRecord(value) ||
-    !hasOnlyKeys(value, ["schemaVersion", "key", "jira", "repositories", "workflow"]) ||
-    (value.schemaVersion !== 1 && value.schemaVersion !== 2) ||
+    !hasOnlyKeys(value, ["schemaVersion", "key", "source", "repositories", "workflow"]) ||
+    value.schemaVersion !== 3 ||
     typeof value.key !== "string" ||
-    !isRecord(value.jira) ||
-    !hasOnlyKeys(value.jira, ["url", "fingerprint", "updatedAt"]) ||
-    typeof value.jira.url !== "string" ||
-    typeof value.jira.fingerprint !== "string" ||
-    (value.jira.updatedAt !== undefined && typeof value.jira.updatedAt !== "string") ||
+    !isRecord(value.source) ||
+    !hasOnlyKeys(value.source, ["kind", "title", "origin", "snapshot", "fingerprint", "capturedAt", "references"]) ||
+    typeof value.source.kind !== "string" ||
+    typeof value.source.title !== "string" ||
+    (value.source.origin !== undefined && typeof value.source.origin !== "string") ||
+    value.source.snapshot !== "intake.md" ||
+    typeof value.source.fingerprint !== "string" ||
+    typeof value.source.capturedAt !== "string" ||
+    !Array.isArray(value.source.references) ||
+    !value.source.references.every((reference) => typeof reference === "string") ||
     !Array.isArray(value.repositories)
   ) {
     return undefined;
   }
   try {
     const key = validateWorkitemKey(value.key);
-    const jiraUrl = validateJiraUrl(value.jira.url);
-    const fingerprint = validateFingerprint(value.jira.fingerprint);
-    const updatedAt = validateUpdatedAt(value.jira.updatedAt as string | undefined);
+    const kind = validateSourceKind(value.source.kind);
+    const title = validateShortText("source title", value.source.title);
+    const origin = validateSourceOrigin(value.source.origin as string | undefined);
+    const fingerprint = validateFingerprint(value.source.fingerprint);
+    const capturedAt = validateTimestamp(value.source.capturedAt)!;
+    const references = validateSourceReferences(value.source.references as string[]);
     const repositories = normalizeRepositories({
       key,
-      jiraUrl,
-      fingerprint,
+      source: { kind, title, content: "validated metadata", origin, capturedAt, references },
       repositories: value.repositories as WorkitemRepositoryReference[],
     });
-    const workflow = value.schemaVersion === 1 ? initialWorkflow() : normalizeWorkflow(value.workflow);
+    const workflow = normalizeWorkflow(value.workflow);
     if (workflow === undefined) return undefined;
     return {
-      schemaVersion: value.schemaVersion,
+      schemaVersion: 3,
       key,
-      jira: {
-        url: jiraUrl,
+      source: {
+        kind,
+        title,
+        ...(origin === undefined ? {} : { origin }),
+        snapshot: "intake.md",
         fingerprint,
-        ...(updatedAt === undefined ? {} : { updatedAt }),
+        capturedAt,
+        references,
       },
       repositories,
       workflow,
@@ -1282,10 +1329,10 @@ async function assertFingerprint(
   required = false,
 ): Promise<void> {
   if (required && fingerprint === undefined) {
-    throw new SaberError("workflow is paused: current Jira fingerprint is required", 3);
+    throw new SaberError("workflow is paused: current source fingerprint is required", 3);
   }
-  if (fingerprint !== undefined && metadata.jira.fingerprint !== validateFingerprint(fingerprint)) {
-    throw new SaberError("workflow is paused because its Jira source fingerprint changed", 3);
+  if (fingerprint !== undefined && metadata.source.fingerprint !== validateFingerprint(fingerprint)) {
+    throw new SaberError("workflow is paused because its source fingerprint changed", 3);
   }
 }
 
@@ -1320,7 +1367,7 @@ async function persistWorkflowTransition(
   const stagedMetadata = await transactionPath(repositoryRoot, metadata.key, "next-workitem.yaml");
   const previousMetadata = await transactionPath(repositoryRoot, metadata.key, "previous-workitem.yaml");
   const stagedHandoff = await transactionPath(repositoryRoot, metadata.key, "next-handoff.md");
-  const nextMetadata: WorkitemMetadata = { ...metadata, schemaVersion: 2, workflow };
+  const nextMetadata: WorkitemMetadata = { ...metadata, workflow };
   const handoffPath = handoff === undefined
     ? null
     : `handoffs/${handoffFilename(workflow.updatedAt, handoff.role)}`;
@@ -1516,8 +1563,8 @@ export async function compareWorkitemFingerprint(
   const currentFingerprint = validateFingerprint(rawFingerprint);
   return {
     key: metadata.key,
-    state: metadata.jira.fingerprint === currentFingerprint ? "current" : "paused",
-    savedFingerprint: metadata.jira.fingerprint,
+    state: metadata.source.fingerprint === currentFingerprint ? "current" : "paused",
+    savedFingerprint: metadata.source.fingerprint,
     currentFingerprint,
   };
 }
@@ -1565,9 +1612,8 @@ export async function getWorkitemStatus(
   );
   return {
     key: metadata.key,
-    jiraUrl: metadata.jira.url,
-    fingerprint: metadata.jira.fingerprint,
-    updatedAt: metadata.jira.updatedAt ?? null,
+    source: metadata.source,
+    fingerprint: metadata.source.fingerprint,
     artifacts: artifacts.map((artifact) =>
       artifact.path === "repositories.yaml" ? repositoryEvidence.artifact : artifact,
     ),

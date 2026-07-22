@@ -136,7 +136,7 @@ test(".env.example documents every connector variable without shipping credentia
 
 test("role, workflow, and skill assets retain their minimum usable contracts", async () => {
   const roleFiles = ["ba.md", "dev.md", "qa.md"];
-  const roleSections = ["Responsible human", "Required input", "Output", "Handoff", "Commands"];
+  const roleSections = ["Responsible human", "Required input", "Output", "Handoff", "Tool interaction"];
 
   for (const filename of roleFiles) {
     const content = await readFile(join(repositoryRoot, "roles", filename), "utf8");
@@ -156,8 +156,8 @@ test("role, workflow, and skill assets retain their minimum usable contracts", a
     for (const section of workflowSections) {
       assert.match(content, new RegExp(`## ${section}`, "u"), `${workflow} lacks ${section}`);
     }
-    assert.match(content, /saber open <JIRA-KEY>/u, `${workflow} lacks a daily open command`);
-    assert.match(content, /saber next <JIRA-KEY> --result/u, `${workflow} lacks a transition command`);
+    assert.match(content, /\/saber/u, `${workflow} lacks the tool-native Saber entrypoint`);
+    assert.doesNotMatch(content, /saber (?:open|next|loop|pause|resume) /u, `${workflow} exposes internal CLI`);
   }
 
   const skillExpectations = [
@@ -272,6 +272,8 @@ test("the /saber entrypoint fixes routing order and preserves the authorization 
   assert.match(content, /角色(?:档案)?(?:只是|仅是|仅作为)上下文[^\n]*不是授权/u);
   assert.match(content, /L2[\s\S]*action preview[\s\S]*精确[\s\S]*(?:确认|confirm)[\s\S]*(?:token|令牌)/iu);
   assert.match(content, /L3[^\n]*(?:禁止|禁用)/u);
+  assert.match(content, /workitem create[\s\S]*--source-type[\s\S]*--source-file/u);
+  assert.match(content, /workitem status[\s\S]*saber next/u);
 });
 
 test("intake and refine keep drafts, sources, and explicit grilling safe", async () => {
@@ -291,9 +293,9 @@ test("intake and refine keep drafts, sources, and explicit grilling safe", async
   assert.match(intake, /source\.kind[\s\S]*jira/u);
 
   assert.match(refine, /文档/u);
-  assert.match(refine, /用户显式[\s\S]*\/grilling/u);
+  assert.match(refine, /用户显式[\s\S]*\/grill-me[\s\S]*\/grill-with-docs/u);
   assert.match(refine, /disable-model-invocation/u);
-  assert.doesNotMatch(refine, /自动(?:调用|触发)[^\n]*\/grilling/u);
+  assert.doesNotMatch(refine, /自动(?:调用|触发)[^\n]*\/grill-(?:me|with-docs)/u);
 
   for (const [name, content] of [
     ["grill-me", grill],
@@ -301,9 +303,9 @@ test("intake and refine keep drafts, sources, and explicit grilling safe", async
   ] as const) {
     const { frontmatter, body } = parseSkill(content);
     assert.equal(frontmatter["disable-model-invocation"], true, `${name} must stay user-triggered`);
-    assert.match(body, /用户显式[\s\S]*\/grilling/u);
+    assert.match(body, new RegExp(`用户显式[\\s\\S]*/${name}`, "u"));
     assert.match(body, /Saber[\s\S]*(?:草稿|草案)/u);
-    assert.doesNotMatch(body, /自动(?:调用|触发)[^\n]*\/grilling/u);
+    assert.doesNotMatch(body, /自动(?:调用|触发)[^\n]*\/grill-(?:me|with-docs)/u);
   }
   assert.match(grillWithDocs, /Saber[\s\S]*(?:文档|引用)[\s\S]*(?:草稿|草案)/u);
 

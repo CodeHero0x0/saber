@@ -116,11 +116,13 @@ function parseLocalConfig(value: unknown, preset: RepositoryConfig): LocalConfig
   }
 
   let skills: string[] = [];
+  let prompts: string[] = [];
   let capabilities: string[] = [];
   if (root.extensions !== undefined) {
     const extensions = requireRecord(root.extensions, `${localConfigFilename}.extensions`);
-    assertKnownKeys(extensions, `${localConfigFilename}.extensions`, ["skills", "capabilities"]);
+    assertKnownKeys(extensions, `${localConfigFilename}.extensions`, ["skills", "prompts", "capabilities"]);
     skills = optionalStringArray(extensions.skills, `${localConfigFilename}.extensions.skills`);
+    prompts = optionalStringArray(extensions.prompts, `${localConfigFilename}.extensions.prompts`);
     capabilities = optionalStringArray(
       extensions.capabilities,
       `${localConfigFilename}.extensions.capabilities`,
@@ -130,6 +132,11 @@ function parseLocalConfig(value: unknown, preset: RepositoryConfig): LocalConfig
   for (const skill of skills) {
     if (!isSafeExternalAssetId(skill)) {
       throw new SaberError(`${localConfigFilename}.extensions contains an invalid skill id`);
+    }
+  }
+  for (const prompt of prompts) {
+    if (!isSafeExternalAssetId(prompt)) {
+      throw new SaberError(`${localConfigFilename}.extensions contains an invalid prompt id`);
     }
   }
 
@@ -148,7 +155,7 @@ function parseLocalConfig(value: unknown, preset: RepositoryConfig): LocalConfig
     }
   }
 
-  return { schemaVersion: 1, defaults, projects, extensions: { skills, capabilities } };
+  return { schemaVersion: 1, defaults, projects, extensions: { skills, prompts, capabilities } };
 }
 
 /** Missing local configuration is empty; an existing file must be a regular non-symlink. */
@@ -166,7 +173,7 @@ export async function loadLocalConfig(
         schemaVersion: 1,
         defaults: {},
         projects: {},
-        extensions: { skills: [], capabilities: [] },
+        extensions: { skills: [], prompts: [], capabilities: [] },
       };
     }
     throw error;

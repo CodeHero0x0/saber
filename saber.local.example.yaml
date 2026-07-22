@@ -14,10 +14,13 @@ projects:
     repository: git@git.example.com:team/backend.git
 
 # 个人技能由后续物化流程从仓库根 skills/<id> 加载。
+# 个人提示词包从仓库根 prompts/<id>/SKILL.md 加载，仅作为本地上下文。
 # capability 只能引用 standard preset 中已有的 L0/L1 能力。
 extensions:
-  skills:
-    - my-local-skill
+  # 添加前先在 skills/<id>/SKILL.md 安装同名个人技能包。
+  skills: []
+  # 添加前先在 prompts/<id>/SKILL.md 创建同名个人提示词包。
+  prompts: []
   capabilities:
     - mysql.read
     - external.assets.update
