@@ -1,0 +1,15 @@
+# Standalone learning configuration for the completed DEMO-101 example.
+schemaVersion: 2
+name: Saber mock project
+workspace:
+  tools:
+    default: codex
+  projects:
+    - name: frontend
+      path: projects/frontend
+      repository: https://git.example.test/team/frontend.git
+    - name: backend
+      path: projects/backend
+      repository: https://git.example.test/team/backend.git
+externalSkills:
+  preset: standard

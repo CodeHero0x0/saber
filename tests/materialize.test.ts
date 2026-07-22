@@ -166,6 +166,39 @@ test("materialize projects only the selected Codex role assets", async () => {
   }
 });
 
+test("materialize makes local skill and capability extensions effective", async () => {
+  const root = await temporaryRoot();
+  try {
+    await fixture(root);
+    await skill(root, "skills/local-review", "local-review");
+    const configured = config();
+    configured.local = {
+      schemaVersion: 1,
+      defaults: {},
+      projects: {},
+      extensions: { skills: ["local-review"], capabilities: ["mysql.read"] },
+    };
+
+    const result = await materialize(root, configured, { role: "qa", tool: "codex" });
+
+    assert.deepEqual(result.teamSkills, ["superpowers", "local-review"]);
+    assert.deepEqual(result.capabilities, ["gitlab.mr.read", "mysql.read", "jira.read"]);
+    const localProjection = result.projections.find(
+      (projection) => projection.name === "saber--team-skill--local-review",
+    );
+    assert.ok(localProjection);
+    assert.equal((await lstat(join(root, localProjection.linkPath))).isSymbolicLink(), true);
+    const context = await readFile(
+      join(root, ".saber/runtime/materialize/codex/root/context/SKILL.md"),
+      "utf8",
+    );
+    assert.match(context, /Capabilities: gitlab\.mr\.read, mysql\.read, jira\.read/u);
+    assert.match(context, /Team skills: superpowers, local-review/u);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("role switch removes only previous Saber links and preserves personal skills", async () => {
   const root = await temporaryRoot();
   try {

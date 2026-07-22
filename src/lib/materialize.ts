@@ -155,6 +155,7 @@ function selectedCapabilities(
       ? unique(requested)
       : unique([
           ...profile.capabilities,
+          ...(config.local?.extensions.capabilities ?? []),
           ...(config.workspace.tools.defaultCapabilities ?? []),
           ...(projectName === undefined
             ? []
@@ -583,7 +584,7 @@ export async function materialize(
     options.project,
   );
   const teamSources = await Promise.all(
-    profile.teamSkills.map(async (id) => ({
+    unique([...profile.teamSkills, ...(config.local?.extensions.skills ?? [])]).map(async (id) => ({
       id,
       source: await requireDirectoryWithSkill(repositoryRoot, `skills/${id}`, `team skill ${id}`),
     })),
@@ -611,11 +612,15 @@ export async function materialize(
   }
 
   await ensureLocalGitExclude(targetRoot, discoveryRelativePath);
+  const effectiveProfile: RoleProfile = {
+    ...profile,
+    teamSkills: unique([...profile.teamSkills, ...(config.local?.extensions.skills ?? [])]),
+  };
   const contextSource = await writeContextPackage(
     repositoryRoot,
     tool,
     options.project,
-    profile,
+    effectiveProfile,
     capabilities,
   );
   const sources: Array<{ name: string; source: string }> = [
@@ -667,7 +672,7 @@ export async function materialize(
       role: profile.id,
       project: options.project ?? null,
       capabilities,
-      teamSkills: [...profile.teamSkills],
+      teamSkills: [...effectiveProfile.teamSkills],
       externalSkills: [...profile.externalSkills],
       workflows: [...profile.workflows],
       projections: projections.map((projection) => ({

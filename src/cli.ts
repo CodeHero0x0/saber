@@ -35,6 +35,10 @@ import {
   runMaterializeCommand,
   type MaterializeCommandDependencies,
 } from "./commands/materialize.js";
+import {
+  runConvenienceCommand,
+  type ConvenienceCommandDependencies,
+} from "./commands/convenience.js";
 import { SaberError } from "./lib/errors.js";
 
 export type CliResult = {
@@ -45,7 +49,17 @@ export type CliResult = {
 
 const usage = `Usage: saber <command>
 
-Commands:
+Daily commands:
+  saber setup [--apply --confirm] [--json]
+  saber use <ba|dev|qa> [--tool <codex|claude|opencode>] [--project <name>] [--json]
+  saber demo [DEMO-101] [--json]
+  saber open <JIRA-KEY> [--json]
+  saber loop <JIRA-KEY> [--json]
+  saber next <JIRA-KEY> --result <result> [--summary <text>] [--risk <text>] [--next <text>] [--fingerprint <hash>] [--json]
+  saber pause <JIRA-KEY> --reason <text> [--json]
+  saber resume <JIRA-KEY> [--fingerprint <hash>] [--json]
+
+Advanced commands:
   saber validate [--json]
   saber doctor [--json]
   saber status [--json]
@@ -61,6 +75,10 @@ Commands:
   saber workitem status <JIRA-KEY> [--json]
 `;
 
+type ConvenienceCliDependencies = ConvenienceCommandDependencies & {
+  runCommand?: typeof runConvenienceCommand;
+};
+
 export type CliDependencies = {
   externalCommand?: ExternalCommandDependencies;
   validateCommand?: ValidateCommandDependencies;
@@ -70,6 +88,7 @@ export type CliDependencies = {
   workitemCommand?: WorkitemCommandDependencies;
   actionCommand?: ActionCommandDependencies;
   materializeCommand?: MaterializeCommandDependencies;
+  convenienceCommand?: ConvenienceCliDependencies;
 };
 
 export async function runCli(
@@ -139,6 +158,15 @@ export async function runCli(
       cwd,
       dependencies: dependencies?.materializeCommand,
     });
+  }
+
+  if (["setup", "use", "demo", "open", "loop", "next", "pause", "resume"].includes(command)) {
+    const convenienceDependencies = dependencies?.convenienceCommand;
+    return (convenienceDependencies?.runCommand ?? runConvenienceCommand)(
+      command,
+      argv.slice(1),
+      { cwd, dependencies: convenienceDependencies },
+    );
   }
 
   const error = new SaberError(`Unknown command: ${command}`, 2);

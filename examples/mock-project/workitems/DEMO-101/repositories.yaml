@@ -1,0 +1,16 @@
+schemaVersion: 1
+repositories:
+  - name: frontend
+    path: projects/frontend
+    repository: https://git.example.test/team/frontend.git
+    branch: feature/DEMO-101-order-note
+    commit: a1b2c3d4
+    mergeRequest: "!101"
+    ci: ci-demo-frontend-102
+  - name: backend
+    path: projects/backend
+    repository: https://git.example.test/team/backend.git
+    branch: feature/DEMO-101-order-note
+    commit: b2c3d4e5
+    mergeRequest: "!202"
+    ci: ci-demo-backend-202

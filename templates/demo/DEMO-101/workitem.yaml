@@ -1,0 +1,21 @@
+schemaVersion: 2
+key: DEMO-101
+jira:
+  url: https://jira.example.test/browse/DEMO-101
+  fingerprint: sha256:demo-order-note-v1
+  updatedAt: 2026-07-22T01:00:00.000Z
+repositories:
+  - name: frontend
+    path: projects/frontend
+    repository: https://git.example.test/team/frontend.git
+  - name: backend
+    path: projects/backend
+    repository: https://git.example.test/team/backend.git
+workflow:
+  state: ba-clarify
+  role: ba
+  iteration: 0
+  pausedFrom: null
+  pauseReason: null
+  updatedAt: 2026-07-22T01:00:00.000Z
+  history: []
