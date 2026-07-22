@@ -59,7 +59,7 @@ saber workitem create --source-type chat --source-title "标题" \
   --source-file .saber/runtime/intake/draft.md --project frontend
 ```
 
-`--source-file` 必须是仓库内普通文件，禁止符号链接、空内容和超出限制的内容。缺少显式 key 时自动生成当日编号；旧 Jira 调用保持兼容。
+`--source-file` 必须是仓库内普通文件，禁止符号链接、空内容和超出限制的内容。缺少显式 key 时自动生成当日编号；Jira 也只能通过同一组 `--source-*` 参数创建。
 
 - [ ] **Step 5: 运行工作项测试**
 
