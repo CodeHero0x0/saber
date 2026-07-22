@@ -37,7 +37,7 @@ export type RoleProfile = {
   capabilities: string[];
 };
 
-export type ConnectorKind = "http" | "mcp-command";
+export type ConnectorKind = "http" | "mcp-command" | "git-cli";
 
 export type ConnectorConfig = {
   id: string;

@@ -23,6 +23,7 @@ const externalPackagePathSegment = /^[A-Za-z0-9][A-Za-z0-9._-]*$/u;
 const fixedRemoteWriteCapabilities = new Set([
   "jira.update",
   "gitlab.mr.create",
+  "git.push",
   "mysql.write",
   "idea.command.execute",
 ]);

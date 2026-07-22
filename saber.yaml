@@ -74,6 +74,7 @@ roleProfiles:
     capabilities:
       - jira.read
       - gitlab.mr.read
+      - git.push
   # QA 负责测试设计、失败定位与证据化交接。
   - id: qa
     teamSkills:
@@ -111,6 +112,11 @@ capabilities:
     risk: L2
     kind: action
     connector: gitlab
+  # 推送业务仓分支是外部写入，必须绑定项目、账号、分支和 commit 后确认。
+  - id: git.push
+    risk: L2
+    kind: action
+    connector: git
   # MySQL MCP 的只读查询。
   - id: mysql.read
     risk: L0
@@ -137,6 +143,13 @@ capabilities:
     kind: action
 # 连接器模板：只声明 ID、类型、环境变量“名称”和提供的能力，绝不保存凭证或连接地址的值。
 connectors:
+  # Git CLI 只允许普通 push；账号标识用于 L2 预览，实际凭证仍由本机 Git 管理。
+  - id: git
+    kind: git-cli
+    requiredEnv:
+      - GIT_PUSH_ACCOUNT_ID
+    provides:
+      - git.push
   # IdeaMCP 通过本机命令启动或连接。
   - id: idea-mcp
     kind: mcp-command
@@ -160,6 +173,8 @@ connectors:
     kind: http
     requiredEnv:
       - JIRA_BASE_URL
+      # 非敏感账号标识会显示在 L2 预览中并绑定确认 token。
+      - JIRA_ACCOUNT_ID
       - JIRA_API_TOKEN
     provides:
       - jira.read
@@ -169,6 +184,8 @@ connectors:
     kind: http
     requiredEnv:
       - GITLAB_BASE_URL
+      # 非敏感账号标识会显示在 L2 预览中并绑定确认 token。
+      - GITLAB_ACCOUNT_ID
       - GITLAB_API_TOKEN
     provides:
       - gitlab.mr.read

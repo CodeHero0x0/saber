@@ -78,8 +78,8 @@ function config(): RepositoryConfig {
       { id: "mysql.read", risk: "L0", kind: "read", connector: "mysql-mcp" },
     ],
     connectors: [
-      { id: "jira", kind: "http", requiredEnv: ["JIRA_BASE_URL", "JIRA_API_TOKEN"], provides: ["jira.read"] },
-      { id: "gitlab", kind: "http", requiredEnv: ["GITLAB_BASE_URL", "GITLAB_API_TOKEN"], provides: ["gitlab.mr.read"] },
+      { id: "jira", kind: "http", requiredEnv: ["JIRA_BASE_URL", "JIRA_ACCOUNT_ID", "JIRA_API_TOKEN"], provides: ["jira.read"] },
+      { id: "gitlab", kind: "http", requiredEnv: ["GITLAB_BASE_URL", "GITLAB_ACCOUNT_ID", "GITLAB_API_TOKEN"], provides: ["gitlab.mr.read"] },
       { id: "mysql-mcp", kind: "mcp-command", requiredEnv: ["MYSQL_MCP_COMMAND"], provides: ["mysql.read"] },
     ],
     externalAssets: {

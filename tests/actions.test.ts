@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -13,14 +13,17 @@ import {
 } from "../src/lib/actions.js";
 import type { HttpFetch } from "../src/lib/http.js";
 import type { Capability, RepositoryConfig } from "../src/lib/models.js";
+import type { SafeProcessCommand, SafeProcessRunner } from "../src/lib/git.js";
 
 const jiraEnvironment = {
   JIRA_BASE_URL: "https://jira.example.test",
+  JIRA_ACCOUNT_ID: "ba@example.test",
   JIRA_API_TOKEN: "jira-secret-token",
 };
 
 const gitlabEnvironment = {
   GITLAB_BASE_URL: "https://gitlab.example.test",
+  GITLAB_ACCOUNT_ID: "dev@example.test",
   GITLAB_API_TOKEN: "gitlab-secret-token",
 };
 
@@ -57,7 +60,7 @@ function jiraConfig(risk: Capability["risk"]): RepositoryConfig {
     {
       id: "jira",
       kind: "http",
-      requiredEnv: ["JIRA_BASE_URL", "JIRA_API_TOKEN"],
+      requiredEnv: ["JIRA_BASE_URL", "JIRA_ACCOUNT_ID", "JIRA_API_TOKEN"],
       provides: [id],
     },
   ]);
@@ -69,10 +72,24 @@ function gitlabConfig(risk: Capability["risk"]): RepositoryConfig {
     {
       id: "gitlab",
       kind: "http",
-      requiredEnv: ["GITLAB_BASE_URL", "GITLAB_API_TOKEN"],
+      requiredEnv: ["GITLAB_BASE_URL", "GITLAB_ACCOUNT_ID", "GITLAB_API_TOKEN"],
       provides: [id],
     },
   ]);
+}
+
+function gitPushConfig(): RepositoryConfig {
+  return configuration(
+    [{ id: "git.push", risk: "L2", kind: "action", connector: "git" }],
+    [
+      {
+        id: "git",
+        kind: "git-cli",
+        requiredEnv: ["GIT_PUSH_ACCOUNT_ID"],
+        provides: ["git.push"],
+      },
+    ],
+  );
 }
 
 async function temporaryRoot(): Promise<string> {
@@ -213,6 +230,43 @@ test("L2 execution requires an exact existing preview token before transport", a
       assert.equal(calls.length, 0);
     }
 
+    const changedAccount = await runCli(
+      [
+        "action",
+        "execute",
+        "jira.update",
+        "--payload",
+        payloadPath,
+        "--confirm",
+        token,
+        "--json",
+      ],
+      {
+        cwd: root,
+        dependencies: {
+          actionCommand: {
+            loadConfig: async () => config,
+            env: { ...jiraEnvironment, JIRA_ACCOUNT_ID: "another@example.test" },
+            fetch: recordingFetch(calls),
+          },
+        },
+      },
+    );
+    assert.equal(changedAccount.exitCode, 3);
+    assert.equal(calls.length, 0);
+
+    const acceptedFetch: HttpFetch = async (url, init) => {
+      calls.push({ url, init });
+      const body = init.method === "GET"
+        ? JSON.stringify({ key: "PROJ-123", fields: { summary: "Do not leak secrets" } })
+        : "";
+      return {
+        ok: true,
+        status: init.method === "GET" ? 200 : 204,
+        statusText: "OK",
+        text: async () => body,
+      };
+    };
     const accepted = await runCli(
       [
         "action",
@@ -230,17 +284,19 @@ test("L2 execution requires an exact existing preview token before transport", a
           actionCommand: {
             loadConfig: async () => config,
             env: jiraEnvironment,
-            fetch: recordingFetch(calls),
+            fetch: acceptedFetch,
           },
         },
       },
     );
     assert.equal(accepted.exitCode, 0);
-    assert.equal(calls.length, 1);
+    assert.equal(calls.length, 2);
     assert.equal(calls[0]?.url, "https://jira.example.test/rest/api/3/issue/PROJ-123");
     assert.equal(calls[0]?.init.method, "PUT");
     assert.equal(calls[0]?.init.headers?.Authorization, "Bearer jira-secret-token");
     assert.equal(calls[0]?.init.body, JSON.stringify({ fields: { summary: "Do not leak secrets" } }));
+    assert.equal(calls[1]?.url, "https://jira.example.test/rest/api/3/issue/PROJ-123");
+    assert.equal(calls[1]?.init.method, "GET");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -266,7 +322,7 @@ test("L2 preview shows the credential source, target, and exact safe change for 
     const preview = (JSON.parse(json.stdout) as {
       preview: {
         operation: {
-          account: { credentialVariable: string; state: string };
+          account: { credentialVariable: string; identityVariable: string; identity: string; state: string };
           target: { connector: string; method: string; path: string; resource: unknown };
           changes: unknown;
         };
@@ -275,7 +331,9 @@ test("L2 preview shows the credential source, target, and exact safe change for 
     assert.deepEqual(preview.operation, {
       account: {
         credentialVariable: "JIRA_API_TOKEN",
-        state: "identity-resolved-at-execution",
+        identityVariable: "JIRA_ACCOUNT_ID",
+        identity: "ba@example.test",
+        state: "declared-local-identity",
       },
       target: {
         connector: "jira",
@@ -339,7 +397,7 @@ test("configured HTTP writes cannot be downgraded below L2", async () => {
     {
       id: "jira",
       kind: "http",
-      requiredEnv: ["JIRA_BASE_URL", "JIRA_API_TOKEN"],
+      requiredEnv: ["JIRA_BASE_URL", "JIRA_ACCOUNT_ID", "JIRA_API_TOKEN"],
       provides: ["jira.update"],
     },
   ]);
@@ -372,7 +430,10 @@ test("Jira read issues a strict GET request with the configured bearer token", a
       config.capabilities[0] as Capability,
       { key: "PROJ-123" },
       {
-        env: jiraEnvironment,
+        env: {
+          JIRA_BASE_URL: jiraEnvironment.JIRA_BASE_URL,
+          JIRA_API_TOKEN: jiraEnvironment.JIRA_API_TOKEN,
+        },
         fetch: recordingFetch(calls, {
           body: JSON.stringify({
             key: "PROJ-123",
@@ -491,6 +552,177 @@ test("duplicate GitLab MR creation returns a branch-query recovery path", async 
   }
 });
 
+test("git.push binds project, account, branch, commit, and reconciles the remote ref", async () => {
+  const root = await temporaryRoot();
+  const config = gitPushConfig();
+  config.workspace.projects = [{ name: "backend", path: "projects/backend" }];
+  await mkdir(join(root, "projects/backend/.git"), { recursive: true });
+  const payload = { project: "backend", remote: "origin", branch: "feature/saber" };
+  const commit = "0123456789abcdef0123456789abcdef01234567";
+  const calls: SafeProcessCommand[] = [];
+  const runner: SafeProcessRunner = async (command) => {
+    calls.push(command);
+    if (command.args.includes("check-ref-format")) {
+      return { exitCode: 0 };
+    }
+    if (command.args.includes("get-url")) {
+      return { exitCode: 0, stdout: "https://gitlab.example.test/team/backend.git\n" };
+    }
+    if (command.args.includes("rev-parse")) {
+      return { exitCode: 0, stdout: `${commit}\n` };
+    }
+    if (command.args.includes("push")) {
+      return { exitCode: 0 };
+    }
+    if (command.args.includes("ls-remote")) {
+      return { exitCode: 0, stdout: `${commit}\trefs/heads/feature/saber\n` };
+    }
+    return { exitCode: 1 };
+  };
+  const environment = { GIT_PUSH_ACCOUNT_ID: "dev@example.test" };
+
+  try {
+    const preview = await createActionPreview(
+      root,
+      config.capabilities[0] as Capability,
+      payload,
+      { env: environment, config, runner },
+    );
+    assert.deepEqual(preview.operation, {
+      account: {
+        credentialVariable: "local-git-credential-helper",
+        identityVariable: "GIT_PUSH_ACCOUNT_ID",
+        identity: "dev@example.test",
+        state: "declared-local-identity",
+      },
+      target: {
+        connector: "git",
+        method: "PUSH",
+        path: "projects/backend",
+        resource: {
+          project: "backend",
+          remote: "origin",
+          remoteSource: "https://gitlab.example.test/team/backend.git",
+          branch: "feature/saber",
+        },
+      },
+      changes: { commit },
+    });
+    assert.equal(calls.some((call) => call.args.includes("push")), false);
+
+    const result = await executeAction(
+      root,
+      config,
+      config.capabilities[0] as Capability,
+      payload,
+      { confirmation: preview.token, env: environment, runner },
+    );
+    assert.equal(result.connector, "git");
+    assert.equal(result.method, "PUSH");
+    assert.deepEqual(result.data, {
+      project: "backend",
+      remote: "origin",
+      branch: "feature/saber",
+      commit,
+      reconciled: true,
+    });
+    const push = calls.find((call) => call.args.includes("push"));
+    assert.ok(push);
+    assert.equal(push.args.some((argument) => argument.includes("force")), false);
+    assert.ok(push.args.includes("--no-follow-tags"));
+    assert.ok(push.args.includes("https://gitlab.example.test/team/backend.git"));
+    assert.equal(push.args.includes("origin"), false);
+    assert.ok(push.args.includes(`${commit}:refs/heads/feature/saber`));
+    const remoteLookup = calls.find((call) => call.args.includes("get-url"));
+    assert.ok(remoteLookup?.args.includes("--push"));
+    assert.ok(remoteLookup?.args.includes("--all"));
+    const reconcile = calls.find((call) => call.args.includes("ls-remote"));
+    assert.ok(reconcile?.args.includes("https://gitlab.example.test/team/backend.git"));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("git.push rejects multiple push URLs before writing", async () => {
+  const root = await temporaryRoot();
+  const config = gitPushConfig();
+  config.workspace.projects = [{ name: "backend", path: "projects/backend" }];
+  await mkdir(join(root, "projects/backend/.git"), { recursive: true });
+  let pushed = false;
+  const runner: SafeProcessRunner = async (command) => {
+    if (command.args.includes("check-ref-format")) return { exitCode: 0 };
+    if (command.args.includes("get-url")) {
+      return {
+        exitCode: 0,
+        stdout: "https://gitlab.example.test/team/backend.git\nhttps://mirror.example.test/team/backend.git\n",
+      };
+    }
+    if (command.args.includes("push")) pushed = true;
+    return { exitCode: 1 };
+  };
+
+  try {
+    await assert.rejects(
+      () => createActionPreview(
+        root,
+        config.capabilities[0] as Capability,
+        { project: "backend", remote: "origin", branch: "feature/saber" },
+        { env: { GIT_PUSH_ACCOUNT_ID: "dev@example.test" }, config, runner },
+      ),
+      /exactly one push URL/iu,
+    );
+    assert.equal(pushed, false);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("git.push reconciles after an uncertain push failure before allowing recovery", async () => {
+  const root = await temporaryRoot();
+  const config = gitPushConfig();
+  config.workspace.projects = [{ name: "backend", path: "projects/backend" }];
+  await mkdir(join(root, "projects/backend/.git"), { recursive: true });
+  const payload = { project: "backend", remote: "origin", branch: "feature/uncertain" };
+  const commit = "fedcba9876543210fedcba9876543210fedcba98";
+  let pushAttempted = false;
+  const calls: SafeProcessCommand[] = [];
+  const runner: SafeProcessRunner = async (command) => {
+    calls.push(command);
+    if (command.args.includes("check-ref-format")) return { exitCode: 0 };
+    if (command.args.includes("get-url")) {
+      return { exitCode: 0, stdout: "git@gitlab.example.test:team/backend.git\n" };
+    }
+    if (command.args.includes("rev-parse")) return { exitCode: 0, stdout: `${commit}\n` };
+    if (command.args.includes("push")) {
+      pushAttempted = true;
+      return { exitCode: 1 };
+    }
+    if (command.args.includes("ls-remote")) {
+      return { exitCode: 0, stdout: `${commit}\trefs/heads/feature/uncertain\n` };
+    }
+    return { exitCode: 1 };
+  };
+  const environment = { GIT_PUSH_ACCOUNT_ID: "dev@example.test" };
+
+  try {
+    const preview = await createActionPreview(root, config.capabilities[0] as Capability, payload, {
+      env: environment,
+      config,
+      runner,
+    });
+    const result = await executeAction(root, config, config.capabilities[0] as Capability, payload, {
+      confirmation: preview.token,
+      env: environment,
+      runner,
+    });
+    assert.equal(pushAttempted, true);
+    assert.equal(result.data && "reconciled" in result.data ? result.data.reconciled : false, true);
+    assert.ok(calls.some((call) => call.args.includes("ls-remote")));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("GitLab read and create map only approved payload fields to their API request shapes", async () => {
   const root = await temporaryRoot();
   const readConfig = gitlabConfig("L0");
@@ -525,7 +757,23 @@ test("GitLab read and create map only approved payload fields to their API reque
       createConfig,
       createConfig.capabilities[0] as Capability,
       payload,
-      { confirmation: preview.token, env: gitlabEnvironment, fetch: recordingFetch(calls) },
+      {
+        confirmation: preview.token,
+        env: gitlabEnvironment,
+        fetch: async (url, init) => {
+          calls.push({ url, init });
+          const body = init.method === "POST"
+            ? JSON.stringify({ iid: 7, state: "opened" })
+            : JSON.stringify({
+                iid: 7,
+                state: "opened",
+                title: "Create Saber workflow",
+                source_branch: "feature/saber",
+                target_branch: "main",
+              });
+          return { ok: true, status: init.method === "POST" ? 201 : 200, statusText: "OK", text: async () => body };
+        },
+      },
     );
     assert.equal(create.method, "POST");
     assert.equal(calls[1]?.url, "https://gitlab.example.test/api/v4/projects/team%2Fservice/merge_requests");
@@ -540,6 +788,145 @@ test("GitLab read and create map only approved payload fields to their API reque
         remove_source_branch: true,
       }),
     );
+    assert.equal(
+      calls[2]?.url,
+      "https://gitlab.example.test/api/v4/projects/team%2Fservice/merge_requests/7",
+    );
+    assert.equal(calls[2]?.init.method, "GET");
+    assert.deepEqual(create.data, {
+      iid: 7,
+      state: "opened",
+      title: "Create Saber workflow",
+      source_branch: "feature/saber",
+      target_branch: "main",
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a successful write with failed reconciliation pauses without inviting a duplicate write", async () => {
+  const root = await temporaryRoot();
+  const config = jiraConfig("L2");
+  const payload = { key: "PROJ-123", fields: { summary: "Reconcile me" } };
+  const preview = await createActionPreview(root, config.capabilities[0] as Capability, payload, {
+    env: jiraEnvironment,
+  });
+  let requestCount = 0;
+  const fetch: HttpFetch = async () => {
+    requestCount += 1;
+    return requestCount === 1
+      ? { ok: true, status: 204, statusText: "No Content", text: async () => "" }
+      : { ok: false, status: 503, statusText: "Unavailable", text: async () => "" };
+  };
+
+  try {
+    await assert.rejects(
+      () =>
+        executeAction(root, config, config.capabilities[0] as Capability, payload, {
+          confirmation: preview.token,
+          env: jiraEnvironment,
+          fetch,
+        }),
+      /may have succeeded.*do not repeat.*jira\.read/iu,
+    );
+    assert.equal(requestCount, 2);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("write reconciliation verifies intended state and recovers an uncertain transport result", async () => {
+  const root = await temporaryRoot();
+  const config = jiraConfig("L2");
+  const payload = { key: "PROJ-123", fields: { summary: "Confirmed remotely" } };
+
+  try {
+    const mismatchPreview = await createActionPreview(
+      root,
+      config.capabilities[0] as Capability,
+      payload,
+      { env: jiraEnvironment },
+    );
+    await assert.rejects(
+      () => executeAction(root, config, config.capabilities[0] as Capability, payload, {
+        confirmation: mismatchPreview.token,
+        env: jiraEnvironment,
+        fetch: recordingFetch([], {
+          body: JSON.stringify({ fields: { summary: "Different value" } }),
+        }),
+      }),
+      /may have succeeded.*do not repeat.*jira\.read/iu,
+    );
+
+    const uncertainPreview = await createActionPreview(
+      root,
+      config.capabilities[0] as Capability,
+      payload,
+      { env: jiraEnvironment },
+    );
+    let callCount = 0;
+    const recovered = await executeAction(
+      root,
+      config,
+      config.capabilities[0] as Capability,
+      payload,
+      {
+        confirmation: uncertainPreview.token,
+        env: jiraEnvironment,
+        fetch: async (_url, init) => {
+          callCount += 1;
+          if (callCount === 1) throw new Error("uncertain write transport");
+          assert.equal(init.method, "GET");
+          return {
+            ok: true,
+            status: 200,
+            statusText: "OK",
+            text: async () => JSON.stringify({ fields: { summary: "Confirmed remotely" } }),
+          };
+        },
+      },
+    );
+    assert.equal(callCount, 2);
+    assert.equal(recovered.status, 0);
+    assert.deepEqual(recovered.data, { fields: { summary: "Confirmed remotely" } });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("GitLab reconciliation rejects an empty branch query after an unparseable write response", async () => {
+  const root = await temporaryRoot();
+  const config = gitlabConfig("L2");
+  const payload = {
+    project: "team/service",
+    title: "Create Saber workflow",
+    sourceBranch: "feature/saber",
+    targetBranch: "main",
+  };
+  const preview = await createActionPreview(root, config.capabilities[0] as Capability, payload, {
+    env: gitlabEnvironment,
+  });
+  let callCount = 0;
+
+  try {
+    await assert.rejects(
+      () => executeAction(root, config, config.capabilities[0] as Capability, payload, {
+        confirmation: preview.token,
+        env: gitlabEnvironment,
+        fetch: async (_url, init) => {
+          callCount += 1;
+          return {
+            ok: true,
+            status: init.method === "POST" ? 201 : 200,
+            statusText: "OK",
+            text: async () => (init.method === "POST" ? "not-json" : "[]"),
+          };
+        },
+      }),
+      /may have succeeded.*do not repeat.*gitlab\.mr\.read/iu,
+    );
+    assert.equal(callCount, 2);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -598,7 +985,7 @@ test("missing connector environment pauses safely and unsupported MCP actions do
     await assert.rejects(
       () =>
         executeAction(root, jira, jira.capabilities[0] as Capability, { key: "PROJ-123" }, {
-          env: { JIRA_BASE_URL: "https://jira.example.test" },
+          env: { JIRA_BASE_URL: "https://jira.example.test", JIRA_ACCOUNT_ID: "ba@example.test" },
         }),
       /JIRA_API_TOKEN/u,
     );
@@ -654,7 +1041,7 @@ test("action parser rejects malformed flags while preview reads only the non-sec
   const config = jiraConfig("L0");
   const payloadPath = await writePayload(root, "payload.json", { key: "PROJ-123" });
   const previewEnvironment = new Proxy<Record<string, string | undefined>>(
-    { JIRA_BASE_URL: jiraEnvironment.JIRA_BASE_URL },
+    { JIRA_BASE_URL: jiraEnvironment.JIRA_BASE_URL, JIRA_ACCOUNT_ID: jiraEnvironment.JIRA_ACCOUNT_ID },
     {
       get: (target, property) => {
         if (property === "JIRA_API_TOKEN") {

@@ -109,11 +109,11 @@ function parseToolName(value: unknown, location: string): ToolName {
 }
 
 function parseConnectorKind(value: unknown, location: string): ConnectorKind {
-  if (value === "http" || value === "mcp-command") {
+  if (value === "http" || value === "mcp-command" || value === "git-cli") {
     return value;
   }
 
-  throw new SaberError(`${location} must be http or mcp-command`);
+  throw new SaberError(`${location} must be http, mcp-command, or git-cli`);
 }
 
 function parseExternalAssetCategory(

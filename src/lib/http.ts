@@ -47,11 +47,17 @@ export type PreparedHttpRequest = {
 };
 
 export type HttpActionPreview = {
-  account: {
-    credentialVariable: "JIRA_API_TOKEN" | "GITLAB_API_TOKEN";
-    /** Identity is intentionally not queried during preview. */
-    state: "identity-resolved-at-execution";
-  };
+  account:
+    | {
+        credentialVariable: "JIRA_API_TOKEN" | "GITLAB_API_TOKEN";
+        identityVariable: "JIRA_ACCOUNT_ID" | "GITLAB_ACCOUNT_ID";
+        identity: string;
+        state: "declared-local-identity";
+      }
+    | {
+        credentialVariable: "JIRA_API_TOKEN" | "GITLAB_API_TOKEN";
+        state: "credential-read-at-execution";
+      };
   target: {
     connector: "jira" | "gitlab";
     method: "GET" | "POST" | "PUT";
@@ -67,6 +73,10 @@ export type ResolvedHttpTarget = {
   url: string;
   /** Safe, one-way binding of the normalized remote target. */
   destinationDigest: string;
+  account?: {
+    identityVariable: "JIRA_ACCOUNT_ID" | "GITLAB_ACCOUNT_ID";
+    identity: string;
+  };
 };
 
 type JsonPrimitive = null | boolean | number | string;
@@ -306,10 +316,14 @@ function prepareRequest(capabilityId: string, payload: unknown): PreparedHttpReq
 
 export function expectedHttpEnvironmentNames(
   connector: "jira" | "gitlab",
-): readonly ["JIRA_BASE_URL" | "GITLAB_BASE_URL", "JIRA_API_TOKEN" | "GITLAB_API_TOKEN"] {
+): readonly [
+  "JIRA_BASE_URL" | "GITLAB_BASE_URL",
+  "JIRA_API_TOKEN" | "GITLAB_API_TOKEN",
+  "JIRA_ACCOUNT_ID" | "GITLAB_ACCOUNT_ID",
+] {
   return connector === "jira"
-    ? ["JIRA_BASE_URL", "JIRA_API_TOKEN"]
-    : ["GITLAB_BASE_URL", "GITLAB_API_TOKEN"];
+    ? ["JIRA_BASE_URL", "JIRA_API_TOKEN", "JIRA_ACCOUNT_ID"]
+    : ["GITLAB_BASE_URL", "GITLAB_API_TOKEN", "GITLAB_ACCOUNT_ID"];
 }
 
 function safeHttpsBaseUrl(value: string, connector: "jira" | "gitlab"): URL {
@@ -391,14 +405,16 @@ function digest(value: string): string {
 }
 
 /**
- * Resolve only the non-secret base URL. The caller must not print or persist
- * `url`; it uses `destinationDigest` to bind a preview to its exact endpoint.
+ * Resolve the non-secret base URL and, for L2, the declared visible account.
+ * The caller must not print or persist `url`; `destinationDigest` binds the
+ * preview to the exact endpoint and required account identity.
  */
 export function resolveHttpTarget(
   request: PreparedHttpRequest,
   environment: Readonly<Record<string, string | undefined>>,
+  requireAccount = false,
 ): ResolvedHttpTarget {
-  const [baseName] = expectedHttpEnvironmentNames(request.connector);
+  const [baseName, , identityVariable] = expectedHttpEnvironmentNames(request.connector);
   const baseValue = environment[baseName];
   if (baseValue === undefined || baseValue.trim().length === 0) {
     throw new SaberError(
@@ -408,9 +424,31 @@ export function resolveHttpTarget(
   }
   const base = safeHttpsBaseUrl(baseValue, request.connector);
   const url = endpointUrl(base, request.path);
+  if (!requireAccount) {
+    return {
+      url,
+      destinationDigest: digest(`saber-http-target-v1\u0000${request.connector}\u0000${url}`),
+    };
+  }
+  const identity = environment[identityVariable];
+  if (
+    identity === undefined ||
+    identity.length === 0 ||
+    identity.length > 320 ||
+    identity.trim() !== identity ||
+    /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(identity)
+  ) {
+    throw new SaberError(
+      `connector ${request.connector} is not configured; set ${identityVariable} to the visible account identity and retry`,
+      3,
+    );
+  }
   return {
     url,
-    destinationDigest: digest(`saber-http-target-v1\u0000${request.connector}\u0000${url}`),
+    destinationDigest: digest(
+      `saber-http-target-v1\u0000${request.connector}\u0000${url}\u0000${identityVariable}\u0000${identity}`,
+    ),
+    account: { identityVariable, identity },
   };
 }
 
@@ -447,7 +485,10 @@ function redactPreviewValue(value: JsonValue, key?: string): JsonValue {
 }
 
 /** Create a human-readable, credential-free preview from an already validated plan. */
-export function describeHttpRequest(request: PreparedHttpRequest): HttpActionPreview {
+export function describeHttpRequest(
+  request: PreparedHttpRequest,
+  account?: ResolvedHttpTarget["account"],
+): HttpActionPreview {
   const [, credentialVariable] = expectedHttpEnvironmentNames(request.connector);
   let changes: JsonValue | null = null;
   if (request.body !== undefined) {
@@ -458,7 +499,15 @@ export function describeHttpRequest(request: PreparedHttpRequest): HttpActionPre
     changes = redactPreviewValue(parsed);
   }
   return {
-    account: { credentialVariable, state: "identity-resolved-at-execution" },
+    account:
+      account === undefined
+        ? { credentialVariable, state: "credential-read-at-execution" }
+        : {
+            credentialVariable,
+            identityVariable: account.identityVariable,
+            identity: account.identity,
+            state: "declared-local-identity",
+          },
     target: {
       connector: request.connector,
       method: request.method,

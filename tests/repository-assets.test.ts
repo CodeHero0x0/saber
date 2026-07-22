@@ -14,6 +14,7 @@ const expectedCapabilities = {
   "jira.update": { risk: "L2", kind: "action" },
   "gitlab.mr.read": { risk: "L0", kind: "read" },
   "gitlab.mr.create": { risk: "L2", kind: "action" },
+  "git.push": { risk: "L2", kind: "action" },
   "mysql.read": { risk: "L0", kind: "read" },
   "mysql.write": { risk: "L2", kind: "action" },
   "idea.project.read": { risk: "L0", kind: "read" },
@@ -41,6 +42,7 @@ test("the checked-in catalog has every required capability and safe connector te
   const connectorById = new Map(config.connectors.map((connector) => [connector.id, connector]));
   assert.equal(connectorById.get("jira")?.kind, "http");
   assert.equal(connectorById.get("gitlab")?.kind, "http");
+  assert.equal(connectorById.get("git")?.kind, "git-cli");
   assert.equal(connectorById.get("idea-mcp")?.kind, "mcp-command");
   assert.equal(connectorById.get("mysql-mcp")?.kind, "mcp-command");
 
@@ -61,9 +63,12 @@ test("saber.yaml is the single repository configuration and connector values sta
     "IDEA_MCP_COMMAND",
     "MYSQL_MCP_COMMAND",
     "JIRA_BASE_URL",
+    "JIRA_ACCOUNT_ID",
     "JIRA_API_TOKEN",
     "GITLAB_BASE_URL",
+    "GITLAB_ACCOUNT_ID",
     "GITLAB_API_TOKEN",
+    "GIT_PUSH_ACCOUNT_ID",
   ];
 
   for (const section of ["workspace", "capabilities", "connectors", "externalAssets"]) {

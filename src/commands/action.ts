@@ -8,6 +8,7 @@ import {
 import { loadRepositoryConfig } from "../lib/config.js";
 import { SaberError } from "../lib/errors.js";
 import type { HttpFetch } from "../lib/http.js";
+import type { SafeProcessRunner } from "../lib/git.js";
 import type { Capability, RepositoryConfig } from "../lib/models.js";
 import { validateRepositoryConfig } from "../lib/validation.js";
 
@@ -22,6 +23,7 @@ export type ActionCommandDependencies = {
   /** Injected only for local tests; production reads the caller's environment at execution time. */
   env?: Readonly<Record<string, string | undefined>>;
   fetch?: HttpFetch;
+  runner?: SafeProcessRunner;
 };
 
 type ParsedOptions = {
@@ -168,6 +170,13 @@ function formatPreview(preview: ActionPreview): string {
       `- Target: ${preview.operation.target.method} ${preview.operation.target.path}`,
       `- Change: ${JSON.stringify(preview.operation.changes)}`,
     );
+    if ("identity" in preview.operation.account) {
+      lines.splice(
+        lines.length - 2,
+        0,
+        `- Account: ${preview.operation.account.identity} (${preview.operation.account.identityVariable})`,
+      );
+    }
   }
   lines.push(
     `- Payload digest: ${preview.payloadDigest}`,
@@ -218,6 +227,8 @@ export async function runActionCommand(
     if (request.action === "preview") {
       const preview = await createActionPreview(cwd, capability, payload, {
         env: dependencies.env,
+        config,
+        runner: dependencies.runner,
       });
       return {
         exitCode: 0,
@@ -229,6 +240,7 @@ export async function runActionCommand(
       confirmation: request.confirmation,
       env: dependencies.env,
       fetch: dependencies.fetch,
+      runner: dependencies.runner,
     });
     return {
       exitCode: 0,

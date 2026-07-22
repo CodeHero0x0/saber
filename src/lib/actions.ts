@@ -1,9 +1,13 @@
 import { createHash } from "node:crypto";
 import { lstat, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { devNull } from "node:os";
 import { join, resolve } from "node:path";
 
 import { SaberError } from "./errors.js";
 import { resolveExistingPathWithinRoot, resolveWithinRoot } from "./files.js";
+import { isSafeExternalAssetSource } from "./validation.js";
+import { runSafeProcess, type SafeProcessCommand, type SafeProcessRunner } from "./git.js";
+import { redactExternalAssetSource } from "./external-assets.js";
 import {
   describeHttpRequest,
   expectedHttpEnvironmentNames,
@@ -34,16 +38,16 @@ type PreviewRecord = {
 export type ActionPreview = Omit<PreviewRecord, "state" | "targetDigest"> & {
   risk: RiskLevel;
   state: "previewed";
-  /** Present only for reviewed Jira/GitLab mappings; never contains credential values or base URLs. */
-  operation?: HttpActionPreview;
+  /** Reviewed connector operation; never contains credential values or private service base URLs. */
+  operation?: HttpActionPreview | GitPushActionPreview;
 };
 
 export type ActionExecution = {
   state: "executed";
   capabilityId: string;
   risk: RiskLevel;
-  connector: "jira" | "gitlab";
-  method: "GET" | "POST" | "PUT";
+  connector: "jira" | "gitlab" | "git";
+  method: "GET" | "POST" | "PUT" | "PUSH";
   path: string;
   status: number;
   data: import("./http.js").JsonValue | null;
@@ -52,11 +56,14 @@ export type ActionExecution = {
 export type ActionExecutionDependencies = HttpExecutionDependencies & {
   /** Required only for L2 actions and never sent to the remote connector. */
   confirmation?: string;
+  runner?: SafeProcessRunner;
 };
 
 export type ActionPreviewDependencies = {
-  /** Only non-secret BASE_URL is read here so the preview binds the destination. */
+  /** Preview reads only non-secret destination/account metadata; API tokens stay execution-only. */
   env?: Readonly<Record<string, string | undefined>>;
+  config?: RepositoryConfig;
+  runner?: SafeProcessRunner;
 };
 
 const previewDirectorySegments = [".saber", "runtime", "action-previews"] as const;
@@ -66,7 +73,29 @@ const fixedRemoteWriteCapabilities = new Set([
   "gitlab.mr.create",
   "mysql.write",
   "idea.command.execute",
+  "git.push",
 ]);
+
+type GitPushActionPreview = {
+  account: {
+    credentialVariable: "local-git-credential-helper";
+    identityVariable: "GIT_PUSH_ACCOUNT_ID";
+    identity: string;
+    state: "declared-local-identity";
+  };
+  target: {
+    connector: "git";
+    method: "PUSH";
+    path: string;
+    resource: {
+      project: string;
+      remote: string;
+      remoteSource: string;
+      branch: string;
+    };
+  };
+  changes: { commit: string };
+};
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -74,6 +103,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   }
   const prototype = Object.getPrototypeOf(value);
   return prototype === Object.prototype || prototype === null;
+}
+
+function hasOnlyKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean {
+  return Object.keys(value).every((key) => allowed.includes(key));
 }
 
 function digest(value: string): string {
@@ -153,28 +186,198 @@ export function calculatePreviewToken(
 type PreparedActionContext = {
   targetDigest: string;
   request?: PreparedHttpRequest;
-  operation?: HttpActionPreview;
+  operation?: HttpActionPreview | GitPushActionPreview;
   targetUrl?: string;
+  gitPush?: PreparedGitPush;
+};
+
+type PreparedGitPush = {
+  project: string;
+  projectPath: string;
+  remote: string;
+  branch: string;
+  commit: string;
+  remoteSource: string;
 };
 
 /**
  * Resolve an approved HTTP target before confirmation using BASE_URL only.
  * API tokens are deliberately not consulted until after the L2 gate.
  */
-function prepareActionContext(
+function requiredGitPushString(value: unknown, label: string): string {
+  if (
+    typeof value !== "string" ||
+    value.length === 0 ||
+    value.length > 255 ||
+    value.trim() !== value ||
+    /[\u0000-\u001F\u007F]/u.test(value)
+  ) {
+    throw new SaberError(`invalid git.push ${label}`, 2);
+  }
+  return value;
+}
+
+function readGitPushAccount(
+  environment: Readonly<Record<string, string | undefined>>,
+): string {
+  const value = environment.GIT_PUSH_ACCOUNT_ID;
+  if (
+    value === undefined ||
+    value.length === 0 ||
+    value.length > 320 ||
+    value.trim() !== value ||
+    /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(value)
+  ) {
+    throw new SaberError(
+      "connector git is not configured; set GIT_PUSH_ACCOUNT_ID to the visible account identity and retry",
+      3,
+    );
+  }
+  return value;
+}
+
+function safeGitOutput(result: { exitCode: number; stdout?: string }, label: string): string {
+  const value = result.stdout?.trim();
+  if (result.exitCode !== 0 || value === undefined || value.length === 0) {
+    throw new SaberError(`could not inspect git.push ${label}`, 2);
+  }
+  return value;
+}
+
+async function prepareGitPushContext(
+  repositoryRoot: string,
+  config: RepositoryConfig | undefined,
   capability: Capability,
   payload: unknown,
   environment: Readonly<Record<string, string | undefined>>,
-): PreparedActionContext {
+  runner: SafeProcessRunner,
+): Promise<PreparedActionContext> {
+  if (config === undefined) {
+    throw new SaberError("git.push preview requires repository configuration", 2);
+  }
+  configuredGitConnector(config, capability);
+  if (!isRecord(payload) || !hasOnlyKeys(payload, ["project", "remote", "branch"])) {
+    throw new SaberError("invalid git.push payload", 2);
+  }
+  const projectName = requiredGitPushString(payload.project, "project");
+  const remote = requiredGitPushString(payload.remote, "remote");
+  const branch = requiredGitPushString(payload.branch, "branch");
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/u.test(remote)) {
+    throw new SaberError("invalid git.push remote", 2);
+  }
+  const project = config.workspace.projects.find((candidate) => candidate.name === projectName);
+  if (project === undefined) {
+    throw new SaberError(`unknown git.push project ${projectName}`, 2);
+  }
+  let projectPath: string;
+  try {
+    projectPath = await resolveExistingPathWithinRoot(repositoryRoot, project.path);
+    if (!(await lstat(projectPath)).isDirectory()) {
+      throw new Error("not a directory");
+    }
+  } catch {
+    throw new SaberError(`git.push project ${projectName} is missing`, 2);
+  }
+  const branchCheck = await runner({
+    program: "git",
+    args: ["check-ref-format", "--branch", branch],
+    cwd: projectPath,
+  });
+  if (branchCheck.exitCode !== 0) {
+    throw new SaberError("invalid git.push branch", 2);
+  }
+  const remoteSource = safeGitOutput(
+    await runner({
+      program: "git",
+      args: ["remote", "get-url", "--push", "--all", remote],
+      cwd: projectPath,
+      captureStdout: true,
+    }),
+    "remote",
+  );
+  if (remoteSource.split(/\r?\n/u).length !== 1) {
+    throw new SaberError("git.push remote must resolve to exactly one push URL", 2);
+  }
+  if (!isSafeExternalAssetSource(remoteSource)) {
+    throw new SaberError("git.push remote must be a credential-free HTTPS or SSH URL", 2);
+  }
+  const commit = safeGitOutput(
+    await runner({
+      program: "git",
+      args: ["rev-parse", "--verify", `refs/heads/${branch}`],
+      cwd: projectPath,
+      captureStdout: true,
+    }),
+    "commit",
+  );
+  if (!/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/iu.test(commit)) {
+    throw new SaberError("git.push commit is invalid", 2);
+  }
+  const account = readGitPushAccount(environment);
+  const gitPush: PreparedGitPush = {
+    project: projectName,
+    projectPath,
+    remote,
+    branch,
+    commit: commit.toLowerCase(),
+    remoteSource,
+  };
+  const targetDigest = digest(
+    `saber-git-push-v1\u0000${projectName}\u0000${project.path}\u0000${remote}\u0000${remoteSource}\u0000${branch}\u0000${gitPush.commit}\u0000${account}`,
+  );
+  return {
+    targetDigest,
+    gitPush,
+    operation: {
+      account: {
+        credentialVariable: "local-git-credential-helper",
+        identityVariable: "GIT_PUSH_ACCOUNT_ID",
+        identity: account,
+        state: "declared-local-identity",
+      },
+      target: {
+        connector: "git",
+        method: "PUSH",
+        path: project.path,
+        resource: {
+          project: projectName,
+          remote,
+          remoteSource: redactExternalAssetSource(remoteSource),
+          branch,
+        },
+      },
+      changes: { commit: gitPush.commit },
+    },
+  };
+}
+
+async function prepareActionContext(
+  repositoryRoot: string,
+  config: RepositoryConfig | undefined,
+  capability: Capability,
+  payload: unknown,
+  environment: Readonly<Record<string, string | undefined>>,
+  runner: SafeProcessRunner,
+): Promise<PreparedActionContext> {
+  if (capability.id === "git.push") {
+    return prepareGitPushContext(
+      repositoryRoot,
+      config,
+      capability,
+      payload,
+      environment,
+      runner,
+    );
+  }
   const request = prepareHttpCapability(capability, payload);
   if (request === undefined) {
     return { targetDigest: "no-http-target" };
   }
-  const resolved = resolveHttpTarget(request, environment);
+  const resolved = resolveHttpTarget(request, environment, capability.risk === "L2");
   return {
     targetDigest: resolved.destinationDigest,
     request,
-    operation: describeHttpRequest(request),
+    operation: describeHttpRequest(request, resolved.account),
     targetUrl: resolved.url,
   };
 }
@@ -436,13 +639,33 @@ function configuredHttpConnector(
       3,
     );
   }
-  const [baseName, tokenName] = expectedHttpEnvironmentNames(request.connector);
+  const [baseName, tokenName, accountName] = expectedHttpEnvironmentNames(request.connector);
   if (
     !connector.provides.includes(capability.id) ||
     !connector.requiredEnv.includes(baseName) ||
-    !connector.requiredEnv.includes(tokenName)
+    !connector.requiredEnv.includes(tokenName) ||
+    (capability.risk === "L2" && !connector.requiredEnv.includes(accountName))
   ) {
     throw new SaberError("connector capability mapping is invalid", 2);
+  }
+  return connector;
+}
+
+function configuredGitConnector(
+  config: RepositoryConfig,
+  capability: Capability,
+): ConnectorConfig {
+  if (capability.connector === undefined) {
+    throw new SaberError("git.push has no configured connector", 2);
+  }
+  const connector = config.connectors.find((candidate) => candidate.id === capability.connector);
+  if (
+    connector === undefined ||
+    connector.kind !== "git-cli" ||
+    !connector.provides.includes(capability.id) ||
+    !connector.requiredEnv.includes("GIT_PUSH_ACCOUNT_ID")
+  ) {
+    throw new SaberError("git.push connector capability mapping is invalid", 2);
   }
   return connector;
 }
@@ -480,6 +703,147 @@ const defaultFetch: HttpFetch = async (url, init) => {
   };
 };
 
+function writeReconciliationError(capabilityId: string): SaberError {
+  return capabilityId === "gitlab.mr.create"
+    ? new SaberError(
+        "GitLab MR write may have succeeded; do not repeat the create action; recover with gitlab.mr.read using project, sourceBranch, and targetBranch",
+        3,
+      )
+    : new SaberError(
+        "Jira update may have succeeded; do not repeat the update action; recover with jira.read and compare the intended fields",
+        3,
+      );
+}
+
+function reconciliationRequest(
+  capability: Capability,
+  request: PreparedHttpRequest,
+  writeData: JsonValue | null,
+): PreparedHttpRequest | undefined {
+  if (capability.id === "jira.update" && request.target.type === "jira-issue") {
+    return {
+      connector: "jira",
+      method: "GET",
+      path: request.path,
+      target: request.target,
+    };
+  }
+  if (capability.id !== "gitlab.mr.create" || request.target.type !== "gitlab-project") {
+    return undefined;
+  }
+  if (isRecord(writeData) && Number.isSafeInteger(writeData.iid) && (writeData.iid as number) > 0) {
+    const iid = writeData.iid as number;
+    return {
+      connector: "gitlab",
+      method: "GET",
+      path: `/api/v4/projects/${encodeURIComponent(request.target.project)}/merge_requests/${iid}`,
+      target: { type: "gitlab-merge-request", project: request.target.project, iid },
+    };
+  }
+  const body = request.body === undefined ? undefined : (JSON.parse(request.body) as unknown);
+  if (
+    !isRecord(body) ||
+    typeof body.source_branch !== "string" ||
+    typeof body.target_branch !== "string"
+  ) {
+    throw writeReconciliationError(capability.id);
+  }
+  const query = new URLSearchParams({
+    state: "opened",
+    source_branch: body.source_branch,
+    target_branch: body.target_branch,
+  });
+  return {
+    connector: "gitlab",
+    method: "GET",
+    path: `/api/v4/projects/${encodeURIComponent(request.target.project)}/merge_requests?${query.toString()}`,
+    target: {
+      type: "gitlab-merge-request-list",
+      project: request.target.project,
+      sourceBranch: body.source_branch,
+      targetBranch: body.target_branch,
+    },
+  };
+}
+
+function canonicalJsonEqual(left: JsonValue, right: JsonValue): boolean {
+  return canonicalizeJsonPayload(left) === canonicalizeJsonPayload(right);
+}
+
+function reconciledHttpData(
+  capability: Capability,
+  request: PreparedHttpRequest,
+  writeData: JsonValue | null,
+  data: JsonValue | null,
+): JsonValue {
+  const intended = request.body === undefined ? undefined : parseHttpResponseBody(request.body);
+  if (capability.id === "jira.update") {
+    if (!isRecord(intended) || !isRecord(intended.fields) || !isRecord(data) || !isRecord(data.fields)) {
+      throw writeReconciliationError(capability.id);
+    }
+    for (const [field, expected] of Object.entries(intended.fields)) {
+      const actual = data.fields[field];
+      if (actual === undefined || !canonicalJsonEqual(expected, actual as JsonValue)) {
+        throw writeReconciliationError(capability.id);
+      }
+    }
+    return data as JsonValue;
+  }
+  if (capability.id !== "gitlab.mr.create" || !isRecord(intended)) {
+    throw writeReconciliationError(capability.id);
+  }
+  const candidates = Array.isArray(data) ? data : [data];
+  const expectedIid = isRecord(writeData) && Number.isSafeInteger(writeData.iid)
+    ? writeData.iid
+    : undefined;
+  const match = candidates.find(
+    (candidate) =>
+      isRecord(candidate) &&
+      (expectedIid === undefined || candidate.iid === expectedIid) &&
+      candidate.title === intended.title &&
+      candidate.source_branch === intended.source_branch &&
+      candidate.target_branch === intended.target_branch &&
+      candidate.state === "opened",
+  );
+  if (match === undefined) {
+    throw writeReconciliationError(capability.id);
+  }
+  return match as JsonValue;
+}
+
+async function reconcileHttpWrite(
+  capability: Capability,
+  request: PreparedHttpRequest,
+  writeData: JsonValue | null,
+  environment: Readonly<Record<string, string | undefined>>,
+  token: string,
+  fetchImplementation: HttpFetch,
+): Promise<JsonValue> {
+  try {
+    const reconcile = reconciliationRequest(capability, request, writeData);
+    if (reconcile === undefined) {
+      throw writeReconciliationError(capability.id);
+    }
+    const target = resolveHttpTarget(reconcile, environment);
+    const response = await fetchImplementation(target.url, {
+      method: "GET",
+      headers: { Accept: "application/json", Authorization: `Bearer ${token}` },
+      redirect: "error",
+    });
+    if (!response.ok) {
+      throw writeReconciliationError(capability.id);
+    }
+    return reconciledHttpData(
+      capability,
+      request,
+      writeData,
+      parseHttpResponseBody(await response.text()),
+    );
+  } catch {
+    throw writeReconciliationError(capability.id);
+  }
+}
+
 /** Raw network transport stays private to this module and is reachable only after risk gating. */
 async function executePreparedHttpRequest(
   config: RepositoryConfig,
@@ -502,10 +866,28 @@ async function executePreparedHttpRequest(
     redirect: "error",
   };
   const fetchImplementation = dependencies.fetch ?? defaultFetch;
+  const isWrite = capability.id === "jira.update" || capability.id === "gitlab.mr.create";
   let response: HttpResponse;
   try {
     response = await fetchImplementation(targetUrl, init);
   } catch {
+    if (isWrite) {
+      const data = await reconcileHttpWrite(
+        capability,
+        request,
+        null,
+        environment,
+        token,
+        fetchImplementation,
+      );
+      return {
+        connector: request.connector,
+        method: request.method,
+        path: request.path,
+        status: 0,
+        data,
+      };
+    }
     throw new SaberError(
       `${request.connector === "jira" ? "Jira" : "GitLab"} request failed; check connector configuration and network access`,
     );
@@ -517,17 +899,103 @@ async function executePreparedHttpRequest(
         3,
       );
     }
+    if (
+      isWrite && response.status >= 500
+    ) {
+      const data = await reconcileHttpWrite(
+        capability,
+        request,
+        null,
+        environment,
+        token,
+        fetchImplementation,
+      );
+      return {
+        connector: request.connector,
+        method: request.method,
+        path: request.path,
+        status: response.status,
+        data,
+      };
+    }
     throw new SaberError(
       `${request.connector === "jira" ? "Jira" : "GitLab"} request failed with HTTP ${response.status}`,
     );
   }
-  const data = parseHttpResponseBody(await response.text());
+  let data: JsonValue | null;
+  try {
+    data = parseHttpResponseBody(await response.text());
+  } catch (error: unknown) {
+    if (!isWrite) {
+      throw error;
+    }
+    data = null;
+  }
+  if (isWrite) {
+    data = await reconcileHttpWrite(
+      capability,
+      request,
+      data,
+      environment,
+      token,
+      fetchImplementation,
+    );
+  }
   return {
     connector: request.connector,
     method: request.method,
     path: request.path,
     status: response.status,
     data,
+  };
+}
+
+async function executePreparedGitPush(
+  gitPush: PreparedGitPush,
+  runner: SafeProcessRunner,
+): Promise<Omit<ActionExecution, "state" | "capabilityId" | "risk">> {
+  const ref = `refs/heads/${gitPush.branch}`;
+  const push = await runner({
+    program: "git",
+    args: [
+      "-c",
+      `core.hooksPath=${devNull}`,
+      "push",
+      "--porcelain",
+      "--no-verify",
+      "--no-follow-tags",
+      gitPush.remoteSource,
+      `${gitPush.commit}:${ref}`,
+    ],
+    cwd: gitPush.projectPath,
+  });
+  const remoteRef = await runner({
+    program: "git",
+    args: ["ls-remote", "--exit-code", gitPush.remoteSource, ref],
+    cwd: gitPush.projectPath,
+    captureStdout: true,
+  });
+  const remoteCommit = remoteRef.stdout?.trim().split(/\s+/u, 1)[0]?.toLowerCase();
+  if (remoteRef.exitCode !== 0 || remoteCommit !== gitPush.commit) {
+    throw new SaberError(
+      push.exitCode === 0
+        ? "git.push completed but remote reconciliation did not confirm the previewed commit; inspect the remote before retrying"
+        : "git.push may have succeeded but remote reconciliation did not confirm the previewed commit; do not blindly retry; inspect the remote and create a new preview only after recovery",
+      3,
+    );
+  }
+  return {
+    connector: "git",
+    method: "PUSH",
+    path: gitPush.project,
+    status: 0,
+    data: {
+      project: gitPush.project,
+      remote: gitPush.remote,
+      branch: gitPush.branch,
+      commit: gitPush.commit,
+      reconciled: true,
+    },
   };
 }
 
@@ -540,7 +1008,14 @@ export async function createActionPreview(
 ): Promise<ActionPreview> {
   assertActionRiskPolicy(capability);
   const canonicalPayload = canonicalizeJsonPayload(payload);
-  const context = prepareActionContext(capability, payload, dependencies.env ?? process.env);
+  const context = await prepareActionContext(
+    repositoryRoot,
+    dependencies.config,
+    capability,
+    payload,
+    dependencies.env ?? process.env,
+    dependencies.runner ?? runSafeProcess,
+  );
   const record: PreviewRecord = {
     schemaVersion: 1,
     token: calculatePreviewToken(capability.id, canonicalPayload, context.targetDigest),
@@ -576,7 +1051,14 @@ export async function executeAction(
 
   const canonicalPayload = canonicalizeJsonPayload(payload);
   const environment = dependencies.env ?? process.env;
-  const context = prepareActionContext(capability, payload, environment);
+  const context = await prepareActionContext(
+    repositoryRoot,
+    config,
+    capability,
+    payload,
+    environment,
+    dependencies.runner ?? runSafeProcess,
+  );
   const record: PreviewRecord = {
     schemaVersion: 1,
     token: calculatePreviewToken(capability.id, canonicalPayload, context.targetDigest),
@@ -592,6 +1074,18 @@ export async function executeAction(
   ) {
     throw confirmationRecoveryError();
   }
+  if (context.gitPush !== undefined) {
+    const execution = await executePreparedGitPush(
+      context.gitPush,
+      dependencies.runner ?? runSafeProcess,
+    );
+    return {
+      state: "executed",
+      capabilityId: capability.id,
+      risk: capability.risk,
+      ...execution,
+    };
+  }
   if (context.request === undefined || context.targetUrl === undefined) {
     throw new SaberError(
       "this capability has no safe HTTP executor; use its native MCP tool or add an approved connector adapter",
@@ -599,7 +1093,11 @@ export async function executeAction(
     );
   }
   // Re-resolve immediately before transport so an environment change cannot redirect an approved batch.
-  const currentTarget = resolveHttpTarget(context.request, environment);
+  const currentTarget = resolveHttpTarget(
+    context.request,
+    environment,
+    capability.risk === "L2",
+  );
   if (currentTarget.destinationDigest !== record.targetDigest) {
     throw confirmationRecoveryError();
   }

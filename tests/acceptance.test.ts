@@ -131,6 +131,7 @@ test("approved Saber MVP path works in a fresh temporary workspace", async () =>
           actionCommand: {
             env: {
               JIRA_BASE_URL: "https://jira.example.test",
+              JIRA_ACCOUNT_ID: "ba@example.test",
             },
           },
         },
@@ -154,6 +155,7 @@ test("approved Saber MVP path works in a fresh temporary workspace", async () =>
           actionCommand: {
             env: {
               JIRA_BASE_URL: "https://jira.example.test",
+              JIRA_ACCOUNT_ID: "ba@example.test",
               JIRA_API_TOKEN: "never-sent",
             },
           },
