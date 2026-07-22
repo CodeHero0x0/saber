@@ -1,6 +1,8 @@
 ---
 name: grill-me
 description: Use when a requirement, architecture, or implementation plan needs a rigorous interview before irreversible work begins.
+user-invocable: true
+disable-model-invocation: true
 ---
 
 # Grill a plan
@@ -12,6 +14,10 @@ description: Use when a requirement, architecture, or implementation plan needs 
 5. End with a concise decision record: chosen approach, rejected alternatives, open questions, risks, and the next human owner.
 
 Use this skill before writing a multi-step plan when uncertainty could change the architecture, ownership, safety boundary or acceptance gate. Pause instead of guessing when an answer would authorize an external write or redefine scope.
+
+## Saber 草稿交接
+
+本技能只能由用户显式输入 `/grilling` 触发；`disable-model-invocation: true` 禁止模型自动调用或声称已经调用。以当前 Saber 需求草稿、未决项和已选上下文为输入，只追问会改变目标、范围、验收、风险或责任的问题。结束时将已确认结论、仍未决的风险和真人责任人作为结构化摘要交回草稿；不直接创建工作项或代替用户确认草稿。
 
 ## 可复用资产
 

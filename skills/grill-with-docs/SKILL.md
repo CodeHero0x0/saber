@@ -1,6 +1,8 @@
 ---
 name: grill-with-docs
 description: Use when a plan or technical decision must be challenged against authoritative documentation with traceable citations.
+user-invocable: true
+disable-model-invocation: true
 ---
 
 # Grill a plan with cited documentation
@@ -12,6 +14,10 @@ description: Use when a plan or technical decision must be challenged against au
 5. Produce a decision record with supported claims, unresolved gaps, citations, and the person who must decide any trade-off.
 
 Do not treat blog posts, generated text or a search snippet as authority when official documentation is available. If documentation conflicts or is unavailable, mark the claim uncertain and pause for a responsible human.
+
+## Saber 文档草稿交接
+
+本技能只能在用户显式输入 `/grilling` 并要求结合文档时使用；`disable-model-invocation: true` 禁止模型自动调用或声称已经调用。输入为当前 Saber 草稿、待验证主张和用户选择的文档。输出需把每条结论回链到标题/URL 或路径、版本/日期、章节和适用限制，并将冲突、未知项与真人决策人交回草稿；不直接创建工作项或代替用户确认。
 
 ## 可复用资产
 

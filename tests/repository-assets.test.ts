@@ -3,11 +3,19 @@ import { access, readFile } from "node:fs/promises";
 import test from "node:test";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parse } from "yaml";
 
 import { loadRepositoryConfig } from "../src/lib/config.js";
 import { validateRepositoryConfig } from "../src/lib/validation.js";
 
 const repositoryRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+
+function parseSkill(content: string): { frontmatter: Record<string, unknown>; body: string } {
+  const match = /^---\n([\s\S]*?)\n---\n([\s\S]+)$/u.exec(content);
+  assert.ok(match, "skill must have YAML frontmatter and a non-empty body");
+  const frontmatter = parse(match[1] ?? "") as Record<string, unknown>;
+  return { frontmatter, body: match[2] ?? "" };
+}
 
 const expectedCapabilities = {
   "jira.read": { risk: "L0", kind: "read" },
@@ -205,5 +213,101 @@ test("team skills ship linked reusable references, templates, and checklists", a
       assert.match(artifactContent, /^# /mu, `${artifactPath} needs a useful title`);
       assert.ok(artifactContent.trim().length >= 160, `${artifactPath} must not be a stub`);
     }
+  }
+});
+
+test("tool-native Saber commands have valid frontmatter and Chinese single-purpose contracts", async () => {
+  const commandSkills = [
+    "saber",
+    "saber-intake",
+    "saber-focus",
+    "saber-status",
+    "saber-refine",
+    "saber-help",
+  ] as const;
+
+  for (const name of commandSkills) {
+    const content = await readFile(join(repositoryRoot, "skills", name, "SKILL.md"), "utf8");
+    const { frontmatter, body } = parseSkill(content);
+    assert.equal(frontmatter.name, name);
+    assert.equal(typeof frontmatter.description, "string");
+    assert.ok((frontmatter.description as string).trim().length > 0);
+    assert.equal(frontmatter["user-invocable"], true);
+    assert.match(body, /[\u3400-\u9fff]/u, `${name} must provide Chinese instructions`);
+  }
+
+  const focus = await readFile(join(repositoryRoot, "skills/saber-focus/SKILL.md"), "utf8");
+  const status = await readFile(join(repositoryRoot, "skills/saber-status/SKILL.md"), "utf8");
+  const help = await readFile(join(repositoryRoot, "skills/saber-help/SKILL.md"), "utf8");
+  assert.match(focus, /加载[\s\S]*(?:工作项|上下文)[\s\S]*(?:证据|仓库)/u);
+  assert.match(status, /只读[\s\S]*(?:进度|状态)[\s\S]*(?:缺失|缺口)/u);
+  assert.match(help, /帮助[\s\S]*(?:当前阶段|可做事项)/u);
+  for (const content of [focus, status, help]) {
+    assert.doesNotMatch(content, /创建工作项/u);
+    assert.doesNotMatch(content, /执行外部写入/u);
+  }
+});
+
+test("the /saber entrypoint fixes routing order and preserves the authorization boundary", async () => {
+  const content = await readFile(join(repositoryRoot, "skills/saber/SKILL.md"), "utf8");
+  const routingReference = await readFile(
+    join(repositoryRoot, "skills/saber/references/role-routing.md"),
+    "utf8",
+  );
+  const explicitIntent = content.indexOf("用户显式角色或动作");
+  const workitemOwner = content.indexOf("已有工作项状态责任角色");
+  const defaultRole = content.indexOf("当前物化默认角色");
+  const semanticInference = content.indexOf("语义推断");
+  const clarification = content.indexOf("一个最小澄清问题");
+
+  assert.ok(explicitIntent >= 0, "missing explicit role/action routing priority");
+  assert.ok(explicitIntent < workitemOwner, "explicit intent must outrank workitem state");
+  assert.ok(workitemOwner < defaultRole, "workitem owner must outrank materialized default role");
+  assert.ok(defaultRole < semanticInference, "default role must outrank semantic inference");
+  assert.ok(semanticInference < clarification, "semantic inference must precede clarification");
+  assert.match(content, /唯一主要入口/u);
+  assert.match(content, /\]\(references\/role-routing\.md\)/u);
+  assert.match(routingReference, /^# /u);
+  assert.ok(routingReference.trim().length >= 160);
+  assert.match(content, /角色(?:档案)?(?:只是|仅是|仅作为)上下文[^\n]*不是授权/u);
+  assert.match(content, /L2[\s\S]*action preview[\s\S]*精确[\s\S]*(?:确认|confirm)[\s\S]*(?:token|令牌)/iu);
+  assert.match(content, /L3[^\n]*(?:禁止|禁用)/u);
+});
+
+test("intake and refine keep drafts, sources, and explicit grilling safe", async () => {
+  const intake = await readFile(join(repositoryRoot, "skills/saber-intake/SKILL.md"), "utf8");
+  const refine = await readFile(join(repositoryRoot, "skills/saber-refine/SKILL.md"), "utf8");
+  const grill = await readFile(join(repositoryRoot, "skills/grill-me/SKILL.md"), "utf8");
+  const grillWithDocs = await readFile(
+    join(repositoryRoot, "skills/grill-with-docs/SKILL.md"),
+    "utf8",
+  );
+
+  assert.match(intake, /中文[\s\S]*(?:逐项|一次一个|一次只问一个)[\s\S]*(?:草稿|需求草案)/u);
+  assert.match(intake, /展示[\s\S]*草稿[\s\S]*用户确认[\s\S]*(?:之后|后)[\s\S]*创建工作项/u);
+  assert.match(intake, /(?:文件|--source-file)[\s\S]*(?:后台|内部)[\s\S]*(?:CLI|命令行)/iu);
+  assert.match(intake, /不(?:把|允许)[^\n]*(?:短文本|--source-text)[^\n]*(?:CLI|命令行)/iu);
+  assert.match(intake, /不(?:保存|落盘)[^\n]*完整聊天/u);
+  assert.match(intake, /source\.kind[\s\S]*jira/u);
+
+  assert.match(refine, /文档/u);
+  assert.match(refine, /用户显式[\s\S]*\/grilling/u);
+  assert.match(refine, /disable-model-invocation/u);
+  assert.doesNotMatch(refine, /自动(?:调用|触发)[^\n]*\/grilling/u);
+
+  for (const [name, content] of [
+    ["grill-me", grill],
+    ["grill-with-docs", grillWithDocs],
+  ] as const) {
+    const { frontmatter, body } = parseSkill(content);
+    assert.equal(frontmatter["disable-model-invocation"], true, `${name} must stay user-triggered`);
+    assert.match(body, /用户显式[\s\S]*\/grilling/u);
+    assert.match(body, /Saber[\s\S]*(?:草稿|草案)/u);
+    assert.doesNotMatch(body, /自动(?:调用|触发)[^\n]*\/grilling/u);
+  }
+  assert.match(grillWithDocs, /Saber[\s\S]*(?:文档|引用)[\s\S]*(?:草稿|草案)/u);
+
+  for (const content of [intake, refine, grill, grillWithDocs]) {
+    assert.doesNotMatch(content, /旧\s*(?:Jira\s*)?schema|兼容旧|映射旧|自动升级/u);
   }
 });
