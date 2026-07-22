@@ -11,5 +11,6 @@
 /workitems/**/.workflow-transaction/
 /.idea/
 /.worktrees/
+.DS_Store
 node_modules/
 dist/

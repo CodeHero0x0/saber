@@ -9,6 +9,7 @@ import {
 } from "../lib/git.js";
 import { planExternalAssetUpdates, type ExternalAssetOperation } from "../lib/external-assets.js";
 import type { RepositoryConfig, ToolName } from "../lib/models.js";
+import { inspectMcpDoctor, type McpDoctorReport } from "../lib/doctor-mcp.js";
 import { validateRepositoryConfig } from "../lib/validation.js";
 
 export type DoctorCommandResult = {
@@ -45,6 +46,7 @@ export type DoctorReport = {
         }>;
       }
     | { state: "not-inspected" };
+  mcp: McpDoctorReport;
 };
 
 export type DoctorCommandDependencies = {
@@ -161,6 +163,7 @@ export async function collectDoctorReport(
       connectors: [],
       tools,
       externalAssets: { state: "not-inspected" },
+      mcp: await inspectMcpDoctor(repositoryRoot, undefined, environment),
     };
   }
 
@@ -182,6 +185,7 @@ export async function collectDoctorReport(
     connectors,
     tools,
     externalAssets: await inspectExternalAssets(repositoryRoot, config, externalPlanner),
+    mcp: await inspectMcpDoctor(repositoryRoot, config, environment),
   };
 }
 
@@ -213,6 +217,16 @@ function formatDoctorReport(report: DoctorReport): string {
     report.externalAssets.state === "inspected"
       ? `- External assets: inspected (${report.externalAssets.assets.length})`
       : "- External assets: not inspected",
+  );
+  for (const server of report.mcp.servers) {
+    const missing = server.environment.missing;
+    lines.push(
+      `- MCP ${server.id}: ${server.state}${missing.length === 0 ? "" : ` (missing env: ${missing.join(", ")})`}`,
+    );
+  }
+  lines.push(
+    `- MCP runtime: ${report.mcp.runtime.targets.length} target(s), transactions ${report.mcp.runtime.transactions.state}`,
+    "- MCP policy: L2 action gateway; L3 forbidden; OAuth unsupported",
   );
   return `${lines.join("\n")}\n`;
 }

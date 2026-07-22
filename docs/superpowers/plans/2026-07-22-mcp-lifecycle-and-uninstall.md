@@ -50,7 +50,7 @@ export type StdioMcpServerConfig = {
 };
 export type HttpMcpServerConfig = {
   id: string; transport: "http"; url: string;
-  headers: Record<string, string>; auth: "none" | "oauth"; tools: McpToolConfig[];
+  headers: Record<string, string>; tools: McpToolConfig[];
 };
 export type McpServerConfig = StdioMcpServerConfig | HttpMcpServerConfig;
 ```
@@ -59,7 +59,7 @@ Add `mcp.servers` to team and local resolved config, and `extensions.mcpServers`
 
 - [ ] **Step 3: Add parser and validation tests**
 
-Cover valid stdio/HTTP/OAuth, personal additions, duplicate IDs/tools, transport field mixing, unknown keys, unsafe cwd/URL, unknown capability, personal L2, and obsolete schemas.
+Cover valid stdio/HTTP, rejected OAuth fields, personal additions, duplicate IDs/tools, transport field mixing, unknown keys, unsafe cwd/URL, unknown capability, personal L2, and obsolete schemas.
 
 ```bash
 npx tsx --test tests/mcp-config.test.ts tests/config.test.ts tests/repository-assets.test.ts
@@ -137,7 +137,7 @@ Test empty config, unrelated settings, user MCP entries, managed updates, unowne
 
 - [ ] **Step 2: Implement Codex adapter**
 
-Use structured TOML. Manage only `mcp_servers["saber--<id>"]`; generate bridge stdio entries or native OAuth HTTP entries.
+Use structured TOML. Manage only `mcp_servers["saber--<id>"]`; every entry starts the filtered Saber bridge.
 
 - [ ] **Step 3: Implement Claude and OpenCode adapters**
 
@@ -221,13 +221,13 @@ Expected: PASS with no L2/L3 native bypass.
 
 Cover `--tool`, optional `--project`, `--all`, invalid combinations, empty plans, replaced links, changed files/entries, malformed manifests, path escapes, stale tokens, multi-target preflight failure, write failure, recovery, and repeated uninstall.
 
-- [ ] **Step 2: Implement deterministic preview**
+- [ ] **Step 2: Implement a deterministic plan with a single-use preview token**
 
-Read only selected manifest v3 files. Produce a sorted plan of exact paths, native keys, current digests, preserved resources, and conflicts. Never infer ownership by scanning prefixes.
+Read only selected manifest v3 files. Produce a sorted plan of exact paths, native keys, current digests, preserved resources, and conflicts. Issue a random nonce-backed preview record for that plan; never infer ownership by scanning prefixes.
 
 - [ ] **Step 3: Implement exact confirmation and recoverable apply**
 
-Bind the token to the canonical plan, target set, and source digests. Require `--apply --confirm <token>`, preflight every target, snapshot all affected files, remove verified entries, and roll back all targets on failure.
+Bind the single-use token to a random nonce, canonical plan, target set, and source digests. Require `--apply --confirm <token>`, consume it atomically, preflight every target, snapshot all affected files, remove verified entries, and roll back all targets on failure.
 
 - [ ] **Step 4: Preserve non-owned state and run tests**
 
@@ -247,7 +247,7 @@ Expected: PASS for targeted, all, idempotent, conflict, and rollback behavior.
 
 - [ ] **Step 1: Add and implement doctor states**
 
-Cover missing env, command/build, invalid descriptor, native config drift, pending trust/OAuth/restart, unresolved transaction, and safe L2 routing. Doctor remains read-only and never claims a real connection from config alone.
+Cover missing env, command/build, invalid descriptor, native config drift, pending trust/restart, rejected OAuth, unresolved transaction, and safe L2 routing. Doctor remains read-only and never claims a real connection from config alone.
 
 - [ ] **Step 2: Add three-tool lifecycle acceptance**
 
@@ -288,4 +288,3 @@ git diff --check
 git add package.json package-lock.json src tests skills/saber/SKILL.md saber.yaml saber.local.example.yaml .env.example README.md
 git commit -m "feat: add managed MCP lifecycle and safe uninstall"
 ```
-

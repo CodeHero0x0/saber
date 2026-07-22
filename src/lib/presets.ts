@@ -18,6 +18,9 @@ const standardPreset: RepositoryConfig = {
     },
     projects: [],
   },
+  mcp: {
+    servers: [],
+  },
   roleProfiles: [
     {
       id: "ba",
@@ -56,10 +59,10 @@ const standardPreset: RepositoryConfig = {
     { id: "gitlab.mr.read", risk: "L0", kind: "read", connector: "gitlab" },
     { id: "gitlab.mr.create", risk: "L2", kind: "action", connector: "gitlab" },
     { id: "git.push", risk: "L2", kind: "action", connector: "git" },
-    { id: "mysql.read", risk: "L0", kind: "read", connector: "mysql-mcp" },
-    { id: "mysql.write", risk: "L2", kind: "action", connector: "mysql-mcp" },
-    { id: "idea.project.read", risk: "L0", kind: "read", connector: "idea-mcp" },
-    { id: "idea.command.execute", risk: "L2", kind: "action", connector: "idea-mcp" },
+    { id: "mysql.read", risk: "L0", kind: "read" },
+    { id: "mysql.write", risk: "L2", kind: "action" },
+    { id: "idea.project.read", risk: "L0", kind: "read" },
+    { id: "idea.command.execute", risk: "L2", kind: "action" },
     { id: "external.assets.update", risk: "L1", kind: "action" },
   ],
   connectors: [
@@ -68,18 +71,6 @@ const standardPreset: RepositoryConfig = {
       kind: "git-cli",
       requiredEnv: ["GIT_PUSH_ACCOUNT_ID"],
       provides: ["git.push"],
-    },
-    {
-      id: "idea-mcp",
-      kind: "mcp-command",
-      requiredEnv: ["IDEA_MCP_COMMAND"],
-      provides: ["idea.project.read", "idea.command.execute"],
-    },
-    {
-      id: "mysql-mcp",
-      kind: "mcp-command",
-      requiredEnv: ["MYSQL_MCP_COMMAND"],
-      provides: ["mysql.read", "mysql.write"],
     },
     {
       id: "jira",

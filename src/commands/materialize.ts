@@ -105,7 +105,7 @@ export async function runMaterializeCommand(
     }
     return {
       exitCode: 0,
-      stdout: `Materialized ${result.tool} for role ${result.role}${result.project === null ? "" : ` and project ${result.project}`}\n- Discovery: ${result.discoveryRoot}\n- Skills: ${result.projections.length}\n- Capabilities: ${result.capabilities.join(", ")}\n`,
+      stdout: `Materialized ${result.tool} for role ${result.role}${result.project === null ? "" : ` and project ${result.project}`}\n- Discovery: ${result.discoveryRoot}\n- Skills: ${result.projections.length}\n- Capabilities: ${result.capabilities.join(", ")}\n- MCP servers: ${result.mcpServers.length === 0 ? "none" : result.mcpServers.join(", ")}\n`,
       stderr: "",
     };
   } catch (error: unknown) {

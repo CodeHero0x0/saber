@@ -5,7 +5,7 @@ import { readTextWithinRoot } from "./files.js";
 import { loadLocalConfig } from "./local-config.js";
 import type { ProjectConfig, RepositoryConfig, ToolName } from "./models.js";
 import { createStandardPreset } from "./presets.js";
-import { validateRepositoryConfig } from "./validation.js";
+import { parseMcpServers, validateRepositoryConfig } from "./validation.js";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -75,7 +75,13 @@ function parseProject(value: unknown, index: number): ProjectConfig {
 }
 
 function parseTeamConfig(root: Record<string, unknown>): RepositoryConfig {
-  assertKnownKeys(root, "saber.yaml", ["schemaVersion", "name", "workspace", "externalSkills"]);
+  assertKnownKeys(root, "saber.yaml", [
+    "schemaVersion",
+    "name",
+    "workspace",
+    "externalSkills",
+    "mcp",
+  ]);
   const workspace = requireRecord(root.workspace, "saber.yaml.workspace");
   assertKnownKeys(workspace, "saber.yaml.workspace", ["tools", "projects"]);
   if (!Array.isArray(workspace.projects)) {
@@ -104,6 +110,12 @@ function parseTeamConfig(root: Record<string, unknown>): RepositoryConfig {
   if (externalSkills.preset !== "standard") {
     throw new SaberError("saber.yaml.externalSkills.preset must be standard");
   }
+
+  if (root.mcp !== undefined) {
+    const mcp = requireRecord(root.mcp, "saber.yaml.mcp");
+    assertKnownKeys(mcp, "saber.yaml.mcp", ["servers"]);
+    preset.mcp.servers = parseMcpServers(mcp.servers, "saber.yaml.mcp.servers");
+  }
   return preset;
 }
 
@@ -120,8 +132,8 @@ export async function loadRepositoryConfig(repositoryRoot: string): Promise<Repo
     parseYaml(await readTextWithinRoot(repositoryRoot, "saber.yaml")),
     "saber.yaml",
   );
-  if (root.schemaVersion !== 2) {
-    throw new SaberError("saber.yaml.schemaVersion must be 2");
+  if (root.schemaVersion !== 3) {
+    throw new SaberError("saber.yaml.schemaVersion must be 3");
   }
 
   const config = parseTeamConfig(root);

@@ -1,5 +1,5 @@
-import { createHash } from "node:crypto";
-import { lstat, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { createHash, randomBytes } from "node:crypto";
+import { link, lstat, mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { devNull } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -21,42 +21,52 @@ import {
   prepareHttpCapability,
   resolveHttpTarget,
 } from "./http.js";
+import { connectMcpServer, type McpClientLike } from "./mcp/client.js";
+import { fingerprintMcpValue, resolveMcpRuntime, type McpRuntimeDescriptor } from "./mcp/runtime.js";
 import type { Capability, ConnectorConfig, RepositoryConfig, RiskLevel } from "./models.js";
 
 type JsonPrimitive = null | boolean | number | string;
 type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
 
 type PreviewRecord = {
-  schemaVersion: 1;
+  schemaVersion: 2;
   token: string;
+  nonce: string;
   capabilityId: string;
   payloadDigest: string;
   targetDigest: string;
-  state: "ready" | "consumed";
+  state: "ready";
 };
 
-export type ActionPreview = Omit<PreviewRecord, "state" | "targetDigest"> & {
+export type ActionPreview = Omit<PreviewRecord, "state" | "targetDigest" | "nonce"> & {
   risk: RiskLevel;
   state: "previewed";
   /** Reviewed connector operation; never contains credential values or private service base URLs. */
-  operation?: HttpActionPreview | GitPushActionPreview;
+  operation?: HttpActionPreview | GitPushActionPreview | McpActionPreview;
 };
 
 export type ActionExecution = {
-  state: "executed";
+  state: "executed" | "uncertain";
   capabilityId: string;
   risk: RiskLevel;
-  connector: "jira" | "gitlab" | "git";
-  method: "GET" | "POST" | "PUT" | "PUSH";
+  connector: "jira" | "gitlab" | "git" | "mcp";
+  method: "GET" | "POST" | "PUT" | "PUSH" | "CALL";
   path: string;
   status: number;
   data: import("./http.js").JsonValue | null;
+  reconciliation?: {
+    state: "reconciled" | "observed" | "unavailable";
+    capabilityId?: string;
+    tool?: string;
+    data?: import("./http.js").JsonValue | null;
+  };
 };
 
 export type ActionExecutionDependencies = HttpExecutionDependencies & {
   /** Required only for L2 actions and never sent to the remote connector. */
   confirmation?: string;
   runner?: SafeProcessRunner;
+  connectMcp?: typeof connectMcpServer;
 };
 
 export type ActionPreviewDependencies = {
@@ -97,6 +107,20 @@ type GitPushActionPreview = {
   changes: { commit: string };
 };
 
+type McpActionPreview = {
+  account: {
+    credentialVariable: "configured MCP environment references";
+    state: "resolved-at-execution";
+  };
+  target: {
+    connector: "mcp";
+    method: "CALL";
+    path: string;
+    resource: { server: string; tool: string; transport: "stdio" | "http"; target: string };
+  };
+  changes: { arguments: JsonValue };
+};
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     return false;
@@ -122,7 +146,7 @@ function assertActionRiskPolicy(capability: Capability): void {
     fixedRemoteWriteCapabilities.has(capability.id) &&
     (capability.risk !== "L2" || capability.kind !== "action")
   ) {
-    throw new SaberError("configured HTTP writes must use risk level L2 and kind action", 2);
+    throw new SaberError("configured external writes must use risk level L2 and kind action", 2);
   }
 }
 
@@ -172,23 +196,39 @@ export function canonicalizeJsonPayload(payload: unknown): string {
   return canonicalize(payload, new WeakSet<object>(), 0);
 }
 
-/** Bind the confirmation value to the exact capability and canonical payload. */
+function calculatePreviewTokenFromDigests(
+  capabilityId: string,
+  payloadDigest: string,
+  targetDigest: string,
+  nonce: string,
+): string {
+  return digest(
+    `saber-action-preview-v2\u0000${capabilityId}\u0000${payloadDigest}\u0000${targetDigest}\u0000${nonce}`,
+  );
+}
+
+/** Bind a single-use confirmation value to the exact capability, payload, target, and nonce. */
 export function calculatePreviewToken(
   capabilityId: string,
   canonicalPayload: string,
+  nonce: string,
   targetDigest = "no-http-target",
 ): string {
-  return digest(
-    `saber-action-preview-v1\u0000${capabilityId}\u0000${canonicalPayload}\u0000${targetDigest}`,
+  return calculatePreviewTokenFromDigests(
+    capabilityId,
+    digest(canonicalPayload),
+    targetDigest,
+    nonce,
   );
 }
 
 type PreparedActionContext = {
   targetDigest: string;
   request?: PreparedHttpRequest;
-  operation?: HttpActionPreview | GitPushActionPreview;
+  operation?: HttpActionPreview | GitPushActionPreview | McpActionPreview;
   targetUrl?: string;
   gitPush?: PreparedGitPush;
+  mcp?: PreparedMcp;
 };
 
 type PreparedGitPush = {
@@ -198,6 +238,14 @@ type PreparedGitPush = {
   branch: string;
   commit: string;
   remoteSource: string;
+};
+
+type PreparedMcp = {
+  descriptor: McpRuntimeDescriptor;
+  serverId: string;
+  toolName: string;
+  readToolName?: string;
+  readCapabilityId?: string;
 };
 
 /**
@@ -351,6 +399,170 @@ async function prepareGitPushContext(
   };
 }
 
+function mcpServers(config: RepositoryConfig): RepositoryConfig["mcp"]["servers"] {
+  return [
+    ...(config.mcp?.servers ?? []),
+    ...(config.local?.mcp?.servers ?? []),
+  ];
+}
+
+function isSensitiveMcpKey(key: string): boolean {
+  return /(?:token|secret|password|authorization|credential|api[-_]?key)/iu.test(key);
+}
+
+function collectSensitiveMcpStrings(value: JsonValue, key?: string, found = new Set<string>()): Set<string> {
+  if (key !== undefined && isSensitiveMcpKey(key) && typeof value === "string" && value.length > 0) {
+    found.add(value);
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) collectSensitiveMcpStrings(item, undefined, found);
+  } else if (isRecord(value)) {
+    for (const [entryKey, entryValue] of Object.entries(value)) {
+      collectSensitiveMcpStrings(entryValue as JsonValue, entryKey, found);
+    }
+  }
+  return found;
+}
+
+const sensitiveMcpAssignmentName = String.raw`(?:[A-Za-z0-9_-]*(?:api[-_]?key|authorization|credential|password|passwd|pwd|secret|token)[A-Za-z0-9_-]*|api key)`;
+
+function redactEmbeddedMcpSecrets(value: string): string {
+  const authorizationScheme = /\b([A-Za-z0-9_-]*authorization[A-Za-z0-9_-]*\b\s*(?:=|:)\s*)(?:Bearer|Basic)\s+[^\s&,;]+/giu;
+  const quotedAssignment = new RegExp(
+    String.raw`(\b${sensitiveMcpAssignmentName}\b\s*(?:=|:)\s*)(["'])([^"']*)(["'])`,
+    "giu",
+  );
+  const unquotedAssignment = new RegExp(
+    String.raw`(\b${sensitiveMcpAssignmentName}\b\s*(?:=|:)\s*)(?:Bearer\s+)?([^\s&,;]+)`,
+    "giu",
+  );
+  return value
+    .replace(authorizationScheme, "$1[REDACTED]")
+    .replace(quotedAssignment, (_match, prefix: string, quote: string) =>
+      `${prefix}${quote}[REDACTED]${quote}`)
+    .replace(unquotedAssignment, "$1[REDACTED]")
+    .replace(/\bBearer\s+[^\s&,;]+/giu, "Bearer [REDACTED]");
+}
+
+function redactMcpValue(value: JsonValue, secrets: ReadonlySet<string>, key?: string): JsonValue {
+  if (
+    key !== undefined &&
+    isSensitiveMcpKey(key)
+  ) {
+    return "[REDACTED]";
+  }
+  if (typeof value === "string") {
+    let redacted = value;
+    for (const secret of secrets) redacted = redacted.split(secret).join("[REDACTED]");
+    return redactEmbeddedMcpSecrets(redacted);
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => redactMcpValue(item, secrets));
+  }
+  if (isRecord(value)) {
+    return Object.fromEntries(
+      Object.entries(value).map(([entryKey, entryValue]) => [
+        entryKey,
+        redactMcpValue(entryValue as JsonValue, secrets, entryKey),
+      ]),
+    ) as JsonValue;
+  }
+  return value;
+}
+
+function normalizedMcpArguments(payload: unknown): JsonValue {
+  if (!isRecord(payload)) {
+    throw new SaberError("MCP action arguments must be a JSON object", 2);
+  }
+  return JSON.parse(canonicalizeJsonPayload(payload)) as JsonValue;
+}
+
+function mcpConfigDigest(config: RepositoryConfig): string {
+  return fingerprintMcpValue({
+    capabilities: config.capabilities,
+    mcp: config.mcp,
+    localMcp: config.local?.mcp,
+    selectedTeamServers: config.local?.extensions?.mcpServers,
+  });
+}
+
+function mcpActionContext(
+  repositoryRoot: string,
+  config: RepositoryConfig | undefined,
+  capability: Capability,
+  payload: unknown,
+): PreparedActionContext | undefined {
+  if (config === undefined) return undefined;
+  const resolved = resolveMcpRuntime(repositoryRoot, config, {
+    tool: config.workspace.tools.default,
+    target: "workspace",
+    capabilities: [capability.id],
+  });
+  const mappings = resolved.descriptors.flatMap((descriptor) =>
+    descriptor.tools
+      .filter((tool) => tool.capability === capability.id)
+      .map((tool) => ({ descriptor, tool })),
+  );
+  if (mappings.length === 0) return undefined;
+  if (capability.risk !== "L2" || capability.kind !== "action") {
+    throw new SaberError("use the native L0/L1 MCP tool directly", 2);
+  }
+  if (mappings.length !== 1) {
+    throw new SaberError("capability must have exactly one MCP server/tool mapping", 2);
+  }
+
+  const mapping = mappings[0]!;
+  const server = mcpServers(config).find(
+    (candidate) => candidate.id === mapping.descriptor.server.id,
+  );
+  if (server === undefined) {
+    throw new SaberError("MCP action mapping could not be materialized", 2);
+  }
+  const configDigest = mcpConfigDigest(config);
+  const readMappings = server.tools.filter((tool) => {
+    const mappedCapability = config.capabilities.find((candidate) => candidate.id === tool.capability);
+    return mappedCapability?.kind === "read" && mappedCapability.risk === "L0";
+  });
+  const readToolName = readMappings.length === 1 ? readMappings[0]!.name : undefined;
+  const readCapabilityId = readMappings.length === 1 ? readMappings[0]!.capability : undefined;
+  const targetDigest = fingerprintMcpValue({
+    server,
+    tool: mapping.tool,
+    target: "workspace",
+    configDigest,
+  });
+  const argumentsValue = normalizedMcpArguments(payload);
+  const sensitiveValues = collectSensitiveMcpStrings(argumentsValue);
+  return {
+    targetDigest,
+    mcp: {
+      descriptor: mapping.descriptor,
+      serverId: server.id,
+      toolName: mapping.tool.name,
+      ...(readToolName === undefined ? {} : { readToolName }),
+      ...(readCapabilityId === undefined ? {} : { readCapabilityId }),
+    },
+    operation: {
+      account: {
+        credentialVariable: "configured MCP environment references",
+        state: "resolved-at-execution",
+      },
+      target: {
+        connector: "mcp",
+        method: "CALL",
+        path: `${server.id}/${mapping.tool.name}`,
+        resource: {
+          server: server.id,
+          tool: mapping.tool.name,
+          transport: server.transport,
+          target: "workspace",
+        },
+      },
+      changes: { arguments: redactMcpValue(argumentsValue, sensitiveValues) },
+    },
+  };
+}
+
 async function prepareActionContext(
   repositoryRoot: string,
   config: RepositoryConfig | undefined,
@@ -359,6 +571,8 @@ async function prepareActionContext(
   environment: Readonly<Record<string, string | undefined>>,
   runner: SafeProcessRunner,
 ): Promise<PreparedActionContext> {
+  const mcpContext = mcpActionContext(repositoryRoot, config, capability, payload);
+  if (mcpContext !== undefined) return mcpContext;
   if (capability.id === "git.push") {
     return prepareGitPushContext(
       repositoryRoot,
@@ -453,37 +667,44 @@ function consumedPreviewRecordFileName(token: string): string {
 }
 
 function asPreviewRecord(value: unknown): PreviewRecord | undefined {
-  if (!isRecord(value) || Object.keys(value).length !== 6) {
+  if (!isRecord(value) || Object.keys(value).length !== 7) {
     return undefined;
   }
   if (
-    value.schemaVersion !== 1 ||
+    value.schemaVersion !== 2 ||
     typeof value.token !== "string" ||
+    !/^sha256:[a-f0-9]{64}$/u.test(value.token) ||
+    typeof value.nonce !== "string" ||
+    !/^[a-f0-9]{64}$/u.test(value.nonce) ||
     typeof value.capabilityId !== "string" ||
     typeof value.payloadDigest !== "string" ||
+    !/^sha256:[a-f0-9]{64}$/u.test(value.payloadDigest) ||
     typeof value.targetDigest !== "string" ||
-    (value.state !== "ready" && value.state !== "consumed")
+    !/^sha256:[a-f0-9]{64}$/u.test(value.targetDigest) ||
+    value.state !== "ready"
   ) {
     return undefined;
   }
-  return {
-    schemaVersion: 1,
+  const record: PreviewRecord = {
+    schemaVersion: 2,
     token: value.token,
+    nonce: value.nonce,
     capabilityId: value.capabilityId,
     payloadDigest: value.payloadDigest,
     targetDigest: value.targetDigest,
     state: value.state,
   };
-}
-
-function samePreview(record: PreviewRecord, expected: PreviewRecord): boolean {
-  return (
-    record.schemaVersion === expected.schemaVersion &&
-    record.token === expected.token &&
-    record.capabilityId === expected.capabilityId &&
-    record.payloadDigest === expected.payloadDigest &&
-    record.targetDigest === expected.targetDigest
-  );
+  if (
+    record.token !== calculatePreviewTokenFromDigests(
+      record.capabilityId,
+      record.payloadDigest,
+      record.targetDigest,
+      record.nonce,
+    )
+  ) {
+    return undefined;
+  }
+  return record;
 }
 
 function previewRecordContent(record: PreviewRecord): string {
@@ -521,29 +742,21 @@ async function persistPreviewRecord(
     throw new SaberError("action preview storage is unavailable", 3);
   }
   const path = join(directory, previewRecordFileName(record.token));
-  const existing = await readPreviewRecord(path);
-  if (existing !== undefined) {
-    if (!samePreview(existing, record)) {
-      throw new SaberError("action preview storage is unsafe", 3);
-    }
-    return;
+  const consumedPath = join(directory, consumedPreviewRecordFileName(record.token));
+  if (
+    (await readPreviewRecord(path)) !== undefined ||
+    (await readPreviewRecord(consumedPath)) !== undefined
+  ) {
+    throw new SaberError("action preview storage is unsafe", 3);
   }
 
   try {
-    // The exclusive create gives concurrent previews one stable record without
-    // a separate lock file that could survive a process crash.
     await writeFile(path, previewRecordContent(record), {
       encoding: "utf8",
       flag: "wx",
       mode: 0o600,
     });
   } catch (error: unknown) {
-    if (!isMissingPath(error) && typeof error === "object" && error !== null && "code" in error && (error as { code?: unknown }).code === "EEXIST") {
-      const concurrent = await readPreviewRecord(path);
-      if (concurrent !== undefined && samePreview(concurrent, record)) {
-        return;
-      }
-    }
     throw new SaberError("action preview storage is unavailable", 3);
   }
 }
@@ -557,8 +770,12 @@ function confirmationRecoveryError(): SaberError {
 
 async function consumeExactPreviewRecord(
   repositoryRoot: string,
-  record: PreviewRecord,
+  token: string,
+  expected: Pick<PreviewRecord, "capabilityId" | "payloadDigest" | "targetDigest">,
 ): Promise<boolean> {
+  if (!/^sha256:[a-f0-9]{64}$/u.test(token)) {
+    return false;
+  }
   let directory: string | undefined;
   try {
     directory = await previewDirectory(repositoryRoot, false);
@@ -568,22 +785,26 @@ async function consumeExactPreviewRecord(
   if (directory === undefined) {
     return false;
   }
-  const readyPath = join(directory, previewRecordFileName(record.token));
-  const consumedPath = join(directory, consumedPreviewRecordFileName(record.token));
+  const readyPath = join(directory, previewRecordFileName(token));
+  const consumedPath = join(directory, consumedPreviewRecordFileName(token));
   const existing = await readPreviewRecord(readyPath);
-  if (existing === undefined || existing.state !== "ready" || !samePreview(existing, record)) {
+  if (
+    existing === undefined ||
+    existing.token !== token ||
+    existing.capabilityId !== expected.capabilityId ||
+    existing.payloadDigest !== expected.payloadDigest ||
+    existing.targetDigest !== expected.targetDigest
+  ) {
     return false;
   }
 
   try {
-    // A same-directory rename is atomic. Exactly one caller can move the ready
-    // record to its consumed name and proceed to the network transport.
-    await rename(readyPath, consumedPath);
+    // Creating the tombstone is exclusive on every supported platform; unlike
+    // rename, it can never replace an already-consumed confirmation record.
+    await link(readyPath, consumedPath);
+    await unlink(readyPath);
     return true;
-  } catch (error: unknown) {
-    if (isMissingPath(error)) {
-      return false;
-    }
+  } catch {
     return false;
   }
 }
@@ -999,6 +1220,118 @@ async function executePreparedGitPush(
   };
 }
 
+function safeMcpResult(
+  value: unknown,
+  secrets: ReadonlySet<string>,
+): { valid: true; data: JsonValue } | { valid: false; data: null } {
+  try {
+    const normalized = JSON.parse(canonicalizeJsonPayload(value)) as JsonValue;
+    return { valid: true, data: redactMcpValue(normalized, secrets) };
+  } catch {
+    return { valid: false, data: null };
+  }
+}
+
+async function executePreparedMcp(
+  repositoryRoot: string,
+  prepared: PreparedMcp,
+  payload: unknown,
+  dependencies: ActionExecutionDependencies,
+): Promise<Omit<ActionExecution, "capabilityId" | "risk">> {
+  const normalized = normalizedMcpArguments(payload);
+  const args = normalized as Record<string, JsonValue>;
+  const sensitiveValues = collectSensitiveMcpStrings(normalized);
+  let client: McpClientLike | undefined;
+  try {
+    try {
+      client = await (dependencies.connectMcp ?? connectMcpServer)(
+        repositoryRoot,
+        prepared.descriptor,
+        dependencies.env ?? process.env,
+      );
+      for (const secret of client.secrets ?? []) {
+        if (secret.length > 0) sensitiveValues.add(secret);
+      }
+    } catch {
+      throw new SaberError("could not connect to the configured MCP action server", 3);
+    }
+    let listed: Awaited<ReturnType<McpClientLike["listTools"]>>;
+    try {
+      listed = await client.listTools();
+    } catch {
+      throw new SaberError("could not inspect upstream MCP tools", 2);
+    }
+    const upstreamTools = new Set(listed.tools.map((tool) => tool.name));
+    if (!upstreamTools.has(prepared.toolName)) {
+      throw new SaberError("configured upstream MCP tool was not found", 2);
+    }
+    const readAvailable =
+      prepared.readToolName !== undefined && upstreamTools.has(prepared.readToolName);
+    let writeData: JsonValue | null = null;
+    try {
+      const rawWriteData = await client.callTool({ name: prepared.toolName, arguments: args });
+      const normalizedWrite = safeMcpResult(rawWriteData, sensitiveValues);
+      writeData = normalizedWrite.data;
+    } catch {
+      writeData = null;
+    }
+
+    if (!readAvailable) {
+      return {
+        state: "uncertain",
+        connector: "mcp",
+        method: "CALL",
+        path: `${prepared.serverId}/${prepared.toolName}`,
+        status: 0,
+        data: writeData,
+        reconciliation: { state: "unavailable" },
+      };
+    }
+
+    let reconciliationData: JsonValue | null = null;
+    try {
+      const normalizedRead = safeMcpResult(
+        await client.callTool({ name: prepared.readToolName!, arguments: args }),
+        sensitiveValues,
+      );
+      if (!normalizedRead.valid) {
+        throw new Error("invalid MCP reconciliation result");
+      }
+      reconciliationData = normalizedRead.data;
+    } catch {
+      return {
+        state: "uncertain",
+        connector: "mcp",
+        method: "CALL",
+        path: `${prepared.serverId}/${prepared.toolName}`,
+        status: 0,
+        data: writeData,
+        reconciliation: { state: "unavailable", capabilityId: prepared.readCapabilityId },
+      };
+    }
+    return {
+      state: "uncertain",
+      connector: "mcp",
+      method: "CALL",
+      path: `${prepared.serverId}/${prepared.toolName}`,
+      status: 0,
+      data: writeData,
+      reconciliation: {
+        state: "observed",
+        capabilityId: prepared.readCapabilityId,
+        tool: prepared.readToolName,
+        data: reconciliationData,
+      },
+    };
+  } finally {
+    try {
+      await client?.close?.();
+    } catch {
+      // A close failure cannot justify a second external call.
+    }
+  }
+}
+
 /** Create a local-only preview that binds the canonical payload and non-secret remote target. */
 export async function createActionPreview(
   repositoryRoot: string,
@@ -1016,9 +1349,11 @@ export async function createActionPreview(
     dependencies.env ?? process.env,
     dependencies.runner ?? runSafeProcess,
   );
+  const nonce = randomBytes(32).toString("hex");
   const record: PreviewRecord = {
-    schemaVersion: 1,
-    token: calculatePreviewToken(capability.id, canonicalPayload, context.targetDigest),
+    schemaVersion: 2,
+    token: calculatePreviewToken(capability.id, canonicalPayload, nonce, context.targetDigest),
+    nonce,
     capabilityId: capability.id,
     payloadDigest: digest(canonicalPayload),
     targetDigest: context.targetDigest,
@@ -1059,20 +1394,30 @@ export async function executeAction(
     environment,
     dependencies.runner ?? runSafeProcess,
   );
-  const record: PreviewRecord = {
-    schemaVersion: 1,
-    token: calculatePreviewToken(capability.id, canonicalPayload, context.targetDigest),
+  const expectedRecord = {
     capabilityId: capability.id,
     payloadDigest: digest(canonicalPayload),
     targetDigest: context.targetDigest,
-    state: "ready",
   };
   if (
     capability.risk === "L2" &&
-    (dependencies.confirmation !== record.token ||
-      !(await consumeExactPreviewRecord(repositoryRoot, record)))
+    (dependencies.confirmation === undefined ||
+      !(await consumeExactPreviewRecord(repositoryRoot, dependencies.confirmation, expectedRecord)))
   ) {
     throw confirmationRecoveryError();
+  }
+  if (context.mcp !== undefined) {
+    const execution = await executePreparedMcp(
+      repositoryRoot,
+      context.mcp,
+      payload,
+      dependencies,
+    );
+    return {
+      capabilityId: capability.id,
+      risk: capability.risk,
+      ...execution,
+    };
   }
   if (context.gitPush !== undefined) {
     const execution = await executePreparedGitPush(
@@ -1098,7 +1443,7 @@ export async function executeAction(
     environment,
     capability.risk === "L2",
   );
-  if (currentTarget.destinationDigest !== record.targetDigest) {
+  if (currentTarget.destinationDigest !== expectedRecord.targetDigest) {
     throw confirmationRecoveryError();
   }
   const execution = await executePreparedHttpRequest(

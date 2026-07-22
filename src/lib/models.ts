@@ -26,8 +26,37 @@ export type WorkspaceConfig = {
   projects: ProjectConfig[];
 };
 
+export type McpToolConfig = {
+  name: string;
+  capability: string;
+};
+
+export type StdioMcpServerConfig = {
+  id: string;
+  transport: "stdio";
+  command: string;
+  args: string[];
+  cwd?: string;
+  env: Record<string, string>;
+  tools: McpToolConfig[];
+};
+
+export type HttpMcpServerConfig = {
+  id: string;
+  transport: "http";
+  url: string;
+  headers: Record<string, string>;
+  tools: McpToolConfig[];
+};
+
+export type McpServerConfig = StdioMcpServerConfig | HttpMcpServerConfig;
+
+export type McpConfig = {
+  servers: McpServerConfig[];
+};
+
 export type LocalConfig = {
-  schemaVersion: 1;
+  schemaVersion: 2;
   defaults: {
     role?: RoleName;
     tool?: ToolName;
@@ -37,7 +66,9 @@ export type LocalConfig = {
     skills: string[];
     prompts: string[];
     capabilities: string[];
+    mcpServers: string[];
   };
+  mcp: McpConfig;
 };
 
 export type RoleName = "ba" | "dev" | "qa";
@@ -51,7 +82,7 @@ export type RoleProfile = {
   capabilities: string[];
 };
 
-export type ConnectorKind = "http" | "mcp-command" | "git-cli";
+export type ConnectorKind = "http" | "git-cli";
 
 export type ConnectorConfig = {
   id: string;
@@ -101,6 +132,7 @@ export type RepositoryConfig = {
   connectors: ConnectorConfig[];
   externalAssets: ExternalAssetsConfig;
   roleProfiles: RoleProfile[];
+  mcp: McpConfig;
   /** Restricted member-specific preferences loaded from optional saber.local.yaml. */
   local?: LocalConfig;
 };
@@ -111,4 +143,5 @@ export type RepositoryValidationInput = Pick<
 > & {
   externalAssets?: ExternalAssetsConfig;
   roleProfiles?: RoleProfile[];
+  mcp?: McpConfig;
 };

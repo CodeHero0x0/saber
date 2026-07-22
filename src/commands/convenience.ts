@@ -152,6 +152,7 @@ async function runUse(
     tool,
     defaultRole: role,
     installedCommands: runtime.coreCommands,
+    installedMcpServers: runtime.mcpServers,
     recommendedSkills,
     start,
   };
@@ -164,6 +165,7 @@ async function runUse(
           `- 工具: ${toolLabels[tool]}`,
           `- 默认角色: ${role.toUpperCase()}`,
           `- 已安装命令: ${runtime.coreCommands.join(", ")}`,
+          `- MCP 服务: ${runtime.mcpServers.length === 0 ? "无" : runtime.mcpServers.join(", ")}`,
           `- 推荐技能: ${recommendedSkills.length === 0 ? "无" : recommendedSkills.join(", ")}`,
           `- 启动方式: ${start}`,
           "",

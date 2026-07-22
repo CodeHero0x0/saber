@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { cp, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { cp, lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { parse, stringify } from "yaml";
 
 import { runCli } from "../src/cli.js";
 import { loadRepositoryConfig } from "../src/lib/config.js";
@@ -17,7 +18,31 @@ async function acceptanceRoot(): Promise<string> {
   for (const directory of ["roles", "workflows", "skills"]) {
     await cp(join(repositoryRoot, directory), join(root, directory), { recursive: true });
   }
+  const configPath = join(root, "saber.yaml");
+  const config = parse(await readFile(configPath, "utf8")) as Record<string, unknown>;
+  config.mcp = {
+    servers: [
+      {
+        id: "acceptance",
+        transport: "stdio",
+        command: "node",
+        args: ["tools/mock-mcp.js"],
+        env: {},
+        tools: [{ name: "read_merge_request", capability: "gitlab.mr.read" }],
+      },
+    ],
+  };
+  await writeFile(configPath, stringify(config), "utf8");
   return root;
+}
+
+async function pathMissing(path: string): Promise<boolean> {
+  try {
+    await lstat(path);
+    return false;
+  } catch (error: unknown) {
+    return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
+  }
 }
 
 async function materializeExternalFixture(root: string): Promise<void> {
@@ -126,6 +151,35 @@ test("approved Saber MVP path works in a fresh temporary workspace", async () =>
       );
       assert.equal(loaded.exitCode, 0, loaded.stdout);
     }
+
+    for (const path of [".codex/config.toml", ".mcp.json", "opencode.json"]) {
+      assert.equal(await pathMissing(join(root, path)), false, path);
+    }
+    const codexPreview = await runCli(["uninstall", "--tool", "codex", "--json"], { cwd: root });
+    assert.equal(codexPreview.exitCode, 0, codexPreview.stdout);
+    const codexToken = (JSON.parse(codexPreview.stdout) as {
+      plan: { confirmationToken: string };
+    }).plan.confirmationToken;
+    const codexUninstall = await runCli(
+      ["uninstall", "--tool", "codex", "--apply", "--confirm", codexToken, "--json"],
+      { cwd: root },
+    );
+    assert.equal(codexUninstall.exitCode, 0, codexUninstall.stdout);
+    assert.equal(await pathMissing(join(root, ".codex/config.toml")), true);
+
+    const allPreview = await runCli(["uninstall", "--all", "--json"], { cwd: root });
+    assert.equal(allPreview.exitCode, 0, allPreview.stdout);
+    const allToken = (JSON.parse(allPreview.stdout) as {
+      plan: { confirmationToken: string; targets: unknown[] };
+    }).plan;
+    assert.equal(allToken.targets.length, 2);
+    const allUninstall = await runCli(
+      ["uninstall", "--all", "--apply", "--confirm", allToken.confirmationToken, "--json"],
+      { cwd: root },
+    );
+    assert.equal(allUninstall.exitCode, 0, allUninstall.stdout);
+    assert.equal(await pathMissing(join(root, ".mcp.json")), true);
+    assert.equal(await pathMissing(join(root, "opencode.json")), true);
 
     await writeFile(
       join(root, "jira-update.json"),

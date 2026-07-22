@@ -8,6 +8,7 @@ import {
 import { loadRepositoryConfig } from "../lib/config.js";
 import { SaberError } from "../lib/errors.js";
 import type { HttpFetch } from "../lib/http.js";
+import type { connectMcpServer } from "../lib/mcp/client.js";
 import type { SafeProcessRunner } from "../lib/git.js";
 import type { Capability, RepositoryConfig } from "../lib/models.js";
 import { validateRepositoryConfig } from "../lib/validation.js";
@@ -24,6 +25,7 @@ export type ActionCommandDependencies = {
   env?: Readonly<Record<string, string | undefined>>;
   fetch?: HttpFetch;
   runner?: SafeProcessRunner;
+  connectMcp?: typeof connectMcpServer;
 };
 
 type ParsedOptions = {
@@ -188,13 +190,17 @@ function formatPreview(preview: ActionPreview): string {
 }
 
 function formatExecution(execution: ActionExecution): string {
+  const requestLabel = execution.connector === "mcp" ? "MCP call" : "Request";
   return [
-    `Action executed: ${execution.capabilityId}`,
+    `Action ${execution.state}: ${execution.capabilityId}`,
     `- Risk: ${execution.risk}`,
     `- Connector: ${execution.connector}`,
-    `- Request: ${execution.method} ${execution.path}`,
-    `- HTTP status: ${execution.status}`,
+    `- ${requestLabel}: ${execution.method} ${execution.path}`,
+    ...(execution.connector === "mcp" ? [] : [`- HTTP status: ${execution.status}`]),
     `- Data: ${JSON.stringify(execution.data)}`,
+    ...(execution.reconciliation === undefined
+      ? []
+      : [`- Reconciliation: ${execution.reconciliation.state}`]),
     "",
   ].join("\n");
 }
@@ -241,10 +247,13 @@ export async function runActionCommand(
       env: dependencies.env,
       fetch: dependencies.fetch,
       runner: dependencies.runner,
+      connectMcp: dependencies.connectMcp,
     });
     return {
       exitCode: 0,
-      stdout: request.json ? asJson({ mode: "executed", action: execution }) : formatExecution(execution),
+      stdout: request.json
+        ? asJson({ mode: execution.state, action: execution })
+        : formatExecution(execution),
       stderr: "",
     };
   } catch (error: unknown) {

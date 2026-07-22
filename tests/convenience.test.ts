@@ -39,6 +39,7 @@ function config(teamTool: ToolName = "codex", localTool?: ToolName): RepositoryC
     capabilities: [],
     connectors: [],
     externalAssets: { schemaVersion: 1, assets: [] },
+    mcp: { servers: [] },
     roleProfiles: ["ba", "dev", "qa"].map((id) => ({
       id: id as RoleName,
       teamSkills: [],
@@ -50,10 +51,11 @@ function config(teamTool: ToolName = "codex", localTool?: ToolName): RepositoryC
       ? {}
       : {
           local: {
-            schemaVersion: 1 as const,
+            schemaVersion: 2 as const,
             defaults: { tool: localTool },
             projects: {},
-            extensions: { skills: [], prompts: [], capabilities: [] },
+            extensions: { skills: [], prompts: [], capabilities: [], mcpServers: [] },
+            mcp: { servers: [] },
           },
         }),
   };
@@ -61,10 +63,11 @@ function config(teamTool: ToolName = "codex", localTool?: ToolName): RepositoryC
 
 function materialized(role: RoleName, tool: ToolName, project?: string): MaterializeResult {
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     managedBy: "saber",
     role,
     tool,
+    target: project ?? "root",
     project: project ?? null,
     capabilities: [],
     coreCommands,
@@ -73,6 +76,12 @@ function materialized(role: RoleName, tool: ToolName, project?: string): Materia
     externalSkills: [`${role}-external`],
     workflows: [],
     projections: [],
+    mcpServers: [],
+    mcpEntries: [],
+    descriptors: [],
+    activeIndex: { path: `.saber/runtime/mcp/${tool}/${project ?? "root"}/_active.json`, digest: "0".repeat(64) },
+    toolConfig: { path: ".mcp.json", existedBefore: false, createdBySaber: true, digest: null },
+    sourceFingerprints: { team: `sha256:${"0".repeat(64)}`, local: null, external: null },
     manifestPath: `.saber/runtime/materialize/${tool}/root.json`,
     discoveryRoot: tool === "codex" ? ".agents/skills" : tool === "claude" ? ".claude/skills" : ".opencode/skills",
   };
@@ -134,17 +143,20 @@ test("use supports all nine role and tool combinations", async () => {
         defaultRole: RoleName;
         installedCommands: string[];
         recommendedSkills: string[];
+        installedMcpServers: string[];
         start: string;
       };
       assert.equal(output.tool, tool);
       assert.equal(output.defaultRole, role);
       assert.deepEqual(output.installedCommands, coreCommands);
+      assert.deepEqual(output.installedMcpServers, []);
       assert.deepEqual(output.recommendedSkills, [`${role}-recommended`, `${role}-external`]);
       assert.match(output.start, new RegExp(`^${tool} \\.$`));
       assert.deepEqual(Object.keys(output), [
         "tool",
         "defaultRole",
         "installedCommands",
+        "installedMcpServers",
         "recommendedSkills",
         "start",
       ]);
@@ -164,6 +176,7 @@ test("use renders only the administrator materialize report and no daily CLI sug
   assert.match(result.stdout, /工具.*Claude Code/u);
   assert.match(result.stdout, /默认角色.*DEV/u);
   assert.match(result.stdout, /已安装命令.*saber-intake/u);
+  assert.match(result.stdout, /MCP 服务.*无/u);
   assert.match(result.stdout, /推荐技能.*dev-recommended.*dev-external/u);
   assert.match(result.stdout, /启动方式.*claude \./u);
   assert.doesNotMatch(result.stdout, /saber (?:open|next|loop)/u);

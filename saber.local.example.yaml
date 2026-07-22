@@ -1,5 +1,5 @@
 # 复制为 saber.local.yaml 后按个人环境填写；该文件不会提交。
-schemaVersion: 1
+schemaVersion: 2
 
 # 可选个人默认值。role 仅影响上下文，不能授予写权限。
 defaults:
@@ -24,3 +24,32 @@ extensions:
   capabilities:
     - mysql.read
     - external.assets.update
+  # 这里只能选择团队 mcp.servers 中已有的 ID；选择 server 不会授予额外 capability。
+  mcpServers: []
+
+# 可添加个人 MCP server，但不能覆盖团队同名 server，且只能映射已有 L0/L1 capability。
+mcp:
+  servers: []
+
+  # 个人 stdio 示例：验证包名、参数和工具名后再取消注释。
+  # - id: personal-mysql
+  #   transport: stdio
+  #   command: npx
+  #   args:
+  #     - -y
+  #     - "@modelcontextprotocol/server-mysql"
+  #   env:
+  #     DATABASE_URL: PERSONAL_MYSQL_URL
+  #   tools:
+  #     - name: query
+  #       capability: mysql.read
+
+  # 个人 HTTP 示例：URL 和 header 变量必须指向个人真实环境。
+  # - id: personal-http
+  #   transport: http
+  #   url: https://mcp.example.com/service
+  #   headers:
+  #     Authorization: PERSONAL_MCP_AUTH
+  #   tools:
+  #     - name: search
+  #       capability: jira.read

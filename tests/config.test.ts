@@ -206,7 +206,7 @@ externalAssets:
 roleProfiles: []
 `;
 
-const v2Config = `schemaVersion: 2
+const v3Config = `schemaVersion: 3
 name: Example Team
 workspace:
   tools:
@@ -225,21 +225,21 @@ test("loadRepositoryConfig rejects retired schema versions without a compatibili
     await writeFile(join(root, "saber.yaml"), retiredConfig, "utf8");
     await assert.rejects(
       () => loadRepositoryConfig(root),
-      (error: unknown) => error instanceof SaberError && /schemaVersion must be 2/u.test(error.message),
+      (error: unknown) => error instanceof SaberError && /schemaVersion must be 3/u.test(error.message),
     );
   } finally {
     await rm(root, { recursive: true, force: true });
   }
 });
 
-test("standard preset returns fresh structures and schema v2 expands it", async () => {
+test("standard preset returns fresh structures and schema v3 expands it", async () => {
   const first = createStandardPreset();
   first.capabilities[0]!.id = "changed";
   assert.equal(createStandardPreset().capabilities[0]!.id, "jira.read");
 
-  const root = await mkdtemp(join(tmpdir(), "saber-v2-config-"));
+  const root = await mkdtemp(join(tmpdir(), "saber-v3-config-"));
   try {
-    await writeFile(join(root, "saber.yaml"), v2Config, "utf8");
+    await writeFile(join(root, "saber.yaml"), v3Config, "utf8");
     const config = await loadRepositoryConfig(root);
     assert.equal(config.saber.name, "Example Team");
     assert.equal(config.workspace.tools.default, "claude");
@@ -251,25 +251,26 @@ test("standard preset returns fresh structures and schema v2 expands it", async 
     assert.deepEqual(config.roleProfiles.map((profile) => profile.id), ["ba", "dev", "qa"]);
     assert.deepEqual(config.externalAssets.assets.map((asset) => asset.id), ["superpowers", "openspec"]);
     assert.deepEqual(config.local, {
-      schemaVersion: 1,
+      schemaVersion: 2,
       defaults: {},
       projects: {},
-      extensions: { skills: [], prompts: [], capabilities: [] },
+      extensions: { skills: [], prompts: [], capabilities: [], mcpServers: [] },
+      mcp: { servers: [] },
     });
   } finally {
     await rm(root, { recursive: true, force: true });
   }
 });
 
-test("schema v2 rejects unknown keys in every team mapping", async () => {
-  const root = await mkdtemp(join(tmpdir(), "saber-v2-unknown-key-"));
+test("schema v3 rejects unknown keys in every team mapping", async () => {
+  const root = await mkdtemp(join(tmpdir(), "saber-v3-unknown-key-"));
   try {
     const invalidConfigs = [
-      `${v2Config}token: ignored\n`,
-      v2Config.replace("workspace:\n", "workspace:\n  token: ignored\n"),
-      v2Config.replace("  tools:\n", "  tools:\n    token: ignored\n"),
-      v2Config.replace("    - name: app\n", "    - token: ignored\n      name: app\n"),
-      v2Config.replace("  preset: standard\n", "  preset: standard\n  token: ignored\n"),
+      `${v3Config}token: ignored\n`,
+      v3Config.replace("workspace:\n", "workspace:\n  token: ignored\n"),
+      v3Config.replace("  tools:\n", "  tools:\n    token: ignored\n"),
+      v3Config.replace("    - name: app\n", "    - token: ignored\n      name: app\n"),
+      v3Config.replace("  preset: standard\n", "  preset: standard\n  token: ignored\n"),
     ];
     for (const source of invalidConfigs) {
       await writeFile(join(root, "saber.yaml"), source, "utf8");
@@ -283,13 +284,13 @@ test("schema v2 rejects unknown keys in every team mapping", async () => {
   }
 });
 
-test("schema v2 applies restricted local defaults, repository, and extensions", async () => {
+test("schema v3 applies restricted schema v2 local defaults, repository, and extensions", async () => {
   const root = await mkdtemp(join(tmpdir(), "saber-local-config-"));
   try {
-    await writeFile(join(root, "saber.yaml"), v2Config, "utf8");
+    await writeFile(join(root, "saber.yaml"), v3Config, "utf8");
     await writeFile(
       join(root, "saber.local.yaml"),
-      `schemaVersion: 1
+      `schemaVersion: 2
 defaults:
   role: qa
   tool: opencode
@@ -316,6 +317,7 @@ extensions:
       skills: ["personal-review"],
       prompts: ["concise-review"],
       capabilities: ["mysql.read", "external.assets.update"],
+      mcpServers: [],
     });
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -326,12 +328,12 @@ test("local config rejects unknown projects, unsafe extensions, unknown keys, an
   const root = await mkdtemp(join(tmpdir(), "saber-local-invalid-"));
   const outside = join(root, "outside.yaml");
   try {
-    await writeFile(join(root, "saber.yaml"), v2Config, "utf8");
+    await writeFile(join(root, "saber.yaml"), v3Config, "utf8");
     const invalidCases = [
-      "schemaVersion: 1\nprojects:\n  other:\n    repository: https://example.test/other.git\n",
-      "schemaVersion: 1\nextensions:\n  capabilities: [git.push]\n",
-      "schemaVersion: 1\nextensions:\n  capabilities: [new.read]\n",
-      "schemaVersion: 1\ndefaults:\n  token: do-not-print\n",
+      "schemaVersion: 2\nprojects:\n  other:\n    repository: https://example.test/other.git\n",
+      "schemaVersion: 2\nextensions:\n  capabilities: [git.push]\n",
+      "schemaVersion: 2\nextensions:\n  capabilities: [new.read]\n",
+      "schemaVersion: 2\ndefaults:\n  token: do-not-print\n",
     ];
     for (const source of invalidCases) {
       await writeFile(join(root, "saber.local.yaml"), source, "utf8");
@@ -339,7 +341,7 @@ test("local config rejects unknown projects, unsafe extensions, unknown keys, an
     }
 
     await rm(join(root, "saber.local.yaml"));
-    await writeFile(outside, "schemaVersion: 1\n", "utf8");
+    await writeFile(outside, "schemaVersion: 2\n", "utf8");
     await symlink(outside, join(root, "saber.local.yaml"), "file");
     await assert.rejects(
       () => loadRepositoryConfig(root),
@@ -354,10 +356,10 @@ test("local config rejects unsafe repositories without echoing credentials", asy
   const root = await mkdtemp(join(tmpdir(), "saber-local-secret-"));
   const secret = "super-secret-token";
   try {
-    await writeFile(join(root, "saber.yaml"), v2Config, "utf8");
+    await writeFile(join(root, "saber.yaml"), v3Config, "utf8");
     await writeFile(
       join(root, "saber.local.yaml"),
-      `schemaVersion: 1\nprojects:\n  app:\n    repository: https://user:${secret}@example.test/app.git\n`,
+      `schemaVersion: 2\nprojects:\n  app:\n    repository: https://user:${secret}@example.test/app.git\n`,
       "utf8",
     );
     await assert.rejects(

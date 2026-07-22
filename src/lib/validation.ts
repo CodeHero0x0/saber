@@ -1,8 +1,11 @@
 import { isAbsolute } from "node:path";
 
+import { SaberError } from "./errors.js";
 import type {
   Capability,
   ExternalAssetCategory,
+  McpServerConfig,
+  McpToolConfig,
   RepositoryValidationInput,
   RiskLevel,
   ToolName,
@@ -31,9 +34,154 @@ const fixedRemoteWriteCapabilities = new Set([
 // displayed line. Reject them before a description is printed or a source is
 // parsed into Git argv.
 const unsafeTerminalCharacter = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
+const httpHeaderName = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/u;
 
 function containsUnsafeTerminalCharacter(value: string): boolean {
   return unsafeTerminalCharacter.test(value);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function requireMcpRecord(value: unknown, location: string): Record<string, unknown> {
+  if (!isRecord(value)) {
+    throw new SaberError(`${location} must be a YAML mapping`);
+  }
+  return value;
+}
+
+function assertMcpKnownKeys(
+  record: Record<string, unknown>,
+  location: string,
+  knownKeys: readonly string[],
+): void {
+  for (const key of Object.keys(record)) {
+    if (!knownKeys.includes(key)) {
+      throw new SaberError(`${location} contains an unknown key`);
+    }
+  }
+}
+
+function requireMcpString(value: unknown, location: string): string {
+  if (
+    typeof value !== "string" ||
+    value.length === 0 ||
+    value.trim() !== value ||
+    containsUnsafeTerminalCharacter(value)
+  ) {
+    throw new SaberError(`${location} must be a non-empty safe string`);
+  }
+  return value;
+}
+
+function parseMcpStringArray(value: unknown, location: string): string[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) {
+    throw new SaberError(`${location} must be a list of strings`);
+  }
+  return value.map((item, index) => requireMcpString(item, `${location}[${index}]`));
+}
+
+function parseEnvironmentReferences(
+  value: unknown,
+  location: string,
+  keyKind: "environment variable" | "HTTP header",
+): Record<string, string> {
+  if (value === undefined) return {};
+  const record = requireMcpRecord(value, location);
+  const result: Record<string, string> = {};
+  for (const [key, source] of Object.entries(record)) {
+    if (
+      (keyKind === "environment variable" && !environmentVariableName.test(key)) ||
+      (keyKind === "HTTP header" && !httpHeaderName.test(key))
+    ) {
+      throw new SaberError(`${location} contains an invalid ${keyKind} name`);
+    }
+    const sourceName = requireMcpString(source, `${location}.${key}`);
+    if (!environmentVariableName.test(sourceName)) {
+      throw new SaberError(`${location} values must name environment variables`);
+    }
+    result[key] = sourceName;
+  }
+  return result;
+}
+
+function parseMcpTools(value: unknown, location: string): McpToolConfig[] {
+  if (!Array.isArray(value)) {
+    throw new SaberError(`${location} must be a list`);
+  }
+  return value.map((item, index) => {
+    const itemLocation = `${location}[${index}]`;
+    const record = requireMcpRecord(item, itemLocation);
+    assertMcpKnownKeys(record, itemLocation, ["name", "capability"]);
+    return {
+      name: requireMcpString(record.name, `${itemLocation}.name`),
+      capability: requireMcpString(record.capability, `${itemLocation}.capability`),
+    };
+  });
+}
+
+/** Parse MCP servers as a strict discriminated union and normalize optional collections. */
+export function parseMcpServers(value: unknown, location: string): McpServerConfig[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) {
+    throw new SaberError(`${location} must be a list`);
+  }
+
+  return value.map((item, index) => {
+    const itemLocation = `${location}[${index}]`;
+    const record = requireMcpRecord(item, itemLocation);
+    if (record.transport === "stdio") {
+      assertMcpKnownKeys(record, itemLocation, [
+        "id",
+        "transport",
+        "command",
+        "args",
+        "cwd",
+        "env",
+        "tools",
+      ]);
+      const cwd =
+        record.cwd === undefined
+          ? undefined
+          : requireMcpString(record.cwd, `${itemLocation}.cwd`);
+      return {
+        id: requireMcpString(record.id, `${itemLocation}.id`),
+        transport: "stdio",
+        command: requireMcpString(record.command, `${itemLocation}.command`),
+        args: parseMcpStringArray(record.args, `${itemLocation}.args`),
+        ...(cwd === undefined ? {} : { cwd }),
+        env: parseEnvironmentReferences(
+          record.env,
+          `${itemLocation}.env`,
+          "environment variable",
+        ),
+        tools: parseMcpTools(record.tools, `${itemLocation}.tools`),
+      };
+    }
+    if (record.transport === "http") {
+      assertMcpKnownKeys(record, itemLocation, [
+        "id",
+        "transport",
+        "url",
+        "headers",
+        "tools",
+      ]);
+      return {
+        id: requireMcpString(record.id, `${itemLocation}.id`),
+        transport: "http",
+        url: requireMcpString(record.url, `${itemLocation}.url`),
+        headers: parseEnvironmentReferences(
+          record.headers,
+          `${itemLocation}.headers`,
+          "HTTP header",
+        ),
+        tools: parseMcpTools(record.tools, `${itemLocation}.tools`),
+      };
+    }
+    throw new SaberError(`${itemLocation}.transport must be stdio or http`);
+  });
 }
 
 export function isToolName(value: unknown): value is ToolName {
@@ -149,6 +297,95 @@ function isUnsafeProjectPath(projectPath: string): boolean {
     isWindowsAbsolute ||
     projectPath.split(/[\\/]+/u).includes("..")
   );
+}
+
+export function isSafeMcpCwd(cwd: string): boolean {
+  return cwd === "." || (!isUnsafeProjectPath(cwd) && cwd.trim() === cwd);
+}
+
+function isSafeMcpCommand(command: string): boolean {
+  if (containsUnsafeTerminalCharacter(command) || /\s/u.test(command)) return false;
+  if (!/[\\/]/u.test(command)) return true;
+  return !isUnsafeProjectPath(command);
+}
+
+export function isSafeMcpHttpUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return (
+      url.protocol === "https:" &&
+      url.hostname.length > 0 &&
+      url.username.length === 0 &&
+      url.password.length === 0 &&
+      url.search.length === 0 &&
+      url.hash.length === 0
+    );
+  } catch {
+    return false;
+  }
+}
+
+function validateMcpServers(
+  servers: readonly McpServerConfig[],
+  capabilities: readonly Capability[],
+  errors: string[],
+  scope: string,
+): void {
+  const capabilityIds = new Set(capabilities.map((capability) => capability.id));
+  for (const duplicate of findDuplicateValues(servers.map((server) => server.id))) {
+    errors.push(`${scope} repeats MCP server id ${duplicate}`);
+  }
+
+  for (const server of servers) {
+    if (!isSafeExternalAssetId(server.id)) {
+      errors.push(`${scope} MCP server has invalid id`);
+    }
+    for (const duplicate of findDuplicateValues(server.tools.map((tool) => tool.name))) {
+      errors.push(`${scope} MCP server ${server.id} repeats tool ${duplicate}`);
+    }
+    for (const duplicate of findDuplicateValues(server.tools.map((tool) => tool.capability))) {
+      errors.push(`${scope} MCP server ${server.id} repeats capability ${duplicate}`);
+    }
+    for (const tool of server.tools) {
+      if (!capabilityIds.has(tool.capability)) {
+        errors.push(`${scope} MCP server ${server.id} references unknown capability`);
+      }
+    }
+
+    if (server.transport === "stdio") {
+      if (!isSafeMcpCommand(server.command)) {
+        errors.push(`${scope} MCP server ${server.id} command must be a safe executable`);
+      }
+      if (server.cwd !== undefined && !isSafeMcpCwd(server.cwd)) {
+        errors.push(`${scope} MCP server ${server.id} has unsafe cwd`);
+      }
+      for (const [name, source] of Object.entries(server.env)) {
+        if (!environmentVariableName.test(name) || !environmentVariableName.test(source)) {
+          errors.push(`${scope} MCP server ${server.id} has invalid environment reference`);
+        }
+      }
+    } else {
+      if (!isSafeMcpHttpUrl(server.url)) {
+        errors.push(`${scope} MCP server ${server.id} has unsafe URL`);
+      }
+      for (const [name, source] of Object.entries(server.headers)) {
+        if (!httpHeaderName.test(name) || !environmentVariableName.test(source)) {
+          errors.push(`${scope} MCP server ${server.id} has invalid header reference`);
+        }
+      }
+    }
+  }
+}
+
+/** Validate a standalone MCP collection, including capability cross-references. */
+export function validateMcpServerConfigs(
+  servers: readonly McpServerConfig[],
+  capabilities: readonly Capability[],
+  scope = "configuration",
+): string[] {
+  const errors: string[] = [];
+  validateMcpServers(servers, capabilities, errors, scope);
+  return errors;
 }
 
 function validateTools(input: RepositoryValidationInput, errors: string[]): void {
@@ -415,6 +652,7 @@ export function validateRepositoryConfig(input: RepositoryValidationInput): stri
   validateCapabilityReferences(input, errors);
   validateExternalAssets(input, errors);
   validateRoleProfiles(input, errors);
+  validateMcpServers(input.mcp?.servers ?? [], input.capabilities, errors, "team configuration");
 
   return errors;
 }

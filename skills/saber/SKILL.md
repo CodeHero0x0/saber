@@ -27,6 +27,9 @@ user-invocable: true
 3. 只读操作可直接执行。任何 L2 外部写入都必须先对完全相同的 capability 和 payload 运行 `saber action preview`，向用户展示预览，再等待用户提供该预览的精确 `confirm token`；缺失、失配或过期时停止，不得代替用户确认。
 4. L3 在 MVP 中禁止且禁用，不提供绕过方式。
 5. 不把凭证、完整聊天、大段日志或业务仓源码写入 Saber；只保存继续工作所需的确认产物与证据引用。
+6. MCP 的 L2 capability 必须在配置中唯一解析到一个 server/tool；preview 会脱敏展示 arguments，并将 server、tool、目标、规范化 arguments 和当前 MCP 配置指纹绑定到 confirm token。
+7. MCP 的 L0/L1 capability 直接使用已物化的原生 MCP 工具，不得通过 `saber action execute` 绕过普通工具的风险过滤；L2 execute 重新校验配置和 upstream `tools/list`，确认工具存在后只调用一次。
+8. MCP 写入完成后优先使用同一 server 上可用的读 capability 做 reconcile；没有可用读工具、读工具失败或结果无法确认时，返回 `uncertain`，说明不要盲目重试并先读取事实来源恢复。
 
 ## 后台接口
 

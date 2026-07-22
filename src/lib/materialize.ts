@@ -2,20 +2,30 @@ import {
   appendFile,
   lstat,
   mkdir,
+  readdir,
   readFile,
   readlink,
   realpath,
   rename,
+  rmdir,
   symlink,
   unlink,
   writeFile,
 } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { realpathSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 
 import { parse } from "yaml";
 
 import { SaberError } from "./errors.js";
 import { resolveExistingPathWithinRoot, resolveWithinRoot } from "./files.js";
+import { withRepositoryLifecycleLock } from "./lifecycle-lock.js";
+import {
+  fingerprintMcpValue,
+  resolveMcpRuntime,
+  writeMcpRuntimeDescriptors,
+} from "./mcp/runtime.js";
 import type {
   ExternalAssetsConfig,
   RepositoryConfig,
@@ -23,43 +33,25 @@ import type {
   RoleProfile,
   ToolName,
 } from "./models.js";
+import {
+  createManagedMcpEntry,
+  toolConfigAdapters,
+  type ManagedMcpEntry,
+} from "./tool-configs/index.js";
+import {
+  parseRuntimeManifest,
+  type MaterializeDescriptor,
+  type MaterializeProjection,
+  type RuntimeManifest,
+} from "./materialize-manifest.js";
+import { recoverLifecycleTransactions } from "./uninstall.js";
 import { validateRepositoryConfig } from "./validation.js";
-
-type ProjectionKind =
-  | "context"
-  | "core-command"
-  | "team-skill"
-  | "personal-prompt"
-  | "workflow"
-  | "external-skill";
 
 type ExternalManifestEntry = {
   id: string;
   category: "skill-collection" | "mcp-server";
   materializedPath: string;
   revision: string | null;
-};
-
-type Projection = {
-  name: string;
-  kind: ProjectionKind;
-  linkPath: string;
-  sourcePath: string;
-};
-
-type RuntimeManifest = {
-  schemaVersion: 2;
-  managedBy: "saber";
-  tool: ToolName;
-  role: RoleName;
-  project: string | null;
-  capabilities: string[];
-  coreCommands: string[];
-  teamSkills: string[];
-  prompts: string[];
-  externalSkills: string[];
-  workflows: string[];
-  projections: Projection[];
 };
 
 export type MaterializeOptions = {
@@ -96,40 +88,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function isStringArray(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every((item) => typeof item === "string");
-}
-
-function isRuntimeManifest(value: unknown): value is RuntimeManifest {
-  return (
-    isRecord(value) &&
-    value.schemaVersion === 2 &&
-    value.managedBy === "saber" &&
-    (value.tool === "codex" || value.tool === "claude" || value.tool === "opencode") &&
-    (value.role === "ba" || value.role === "dev" || value.role === "qa") &&
-    (typeof value.project === "string" || value.project === null) &&
-    isStringArray(value.capabilities) &&
-    isStringArray(value.coreCommands) &&
-    isStringArray(value.teamSkills) &&
-    isStringArray(value.prompts) &&
-    isStringArray(value.externalSkills) &&
-    isStringArray(value.workflows) &&
-    Array.isArray(value.projections) &&
-    value.projections.every(
-      (projection) =>
-        isRecord(projection) &&
-        typeof projection.name === "string" &&
-        (projection.kind === "context" ||
-          projection.kind === "core-command" ||
-          projection.kind === "team-skill" ||
-          projection.kind === "personal-prompt" ||
-          projection.kind === "workflow" ||
-          projection.kind === "external-skill") &&
-        typeof projection.linkPath === "string" &&
-        typeof projection.sourcePath === "string",
-    )
-  );
-}
 
 function isMissingPath(error: unknown): boolean {
   return (
@@ -139,6 +97,49 @@ function isMissingPath(error: unknown): boolean {
     ((error as { code?: unknown }).code === "ENOENT" ||
       (error as { code?: unknown }).code === "ENOTDIR")
   );
+}
+
+async function assertNoSymlinkParents(
+  repositoryRoot: string,
+  relativePath: string,
+): Promise<void> {
+  resolveWithinRoot(repositoryRoot, relativePath);
+  const parts = relativePath.split(/[\\/]+/u);
+  let current = resolve(repositoryRoot);
+  for (const part of parts.slice(0, -1)) {
+    current = join(current, part);
+    try {
+      const status = await lstat(current);
+      if (status.isSymbolicLink() || !status.isDirectory()) {
+        throw new SaberError(`materialize path contains an unsafe parent: ${relativePath}`, 2);
+      }
+    } catch (error: unknown) {
+      if (error instanceof SaberError) throw error;
+      if (isMissingPath(error)) return;
+      throw error;
+    }
+  }
+}
+
+async function managedWritePath(
+  repositoryRoot: string,
+  relativePath: string,
+  allowLeafSymlink = false,
+): Promise<string> {
+  resolveWithinRoot(repositoryRoot, relativePath);
+  await assertNoSymlinkParents(repositoryRoot, relativePath);
+  const path = resolve(repositoryRoot, relativePath);
+  if (!allowLeafSymlink) {
+    try {
+      if ((await lstat(path)).isSymbolicLink()) {
+        throw new SaberError(`materialize path is an unsafe symbolic link: ${relativePath}`, 2);
+      }
+    } catch (error: unknown) {
+      if (error instanceof SaberError) throw error;
+      if (!isMissingPath(error)) throw error;
+    }
+  }
+  return path;
 }
 
 function ensureWithin(parent: string, child: string): void {
@@ -332,7 +333,7 @@ async function externalEntries(
   return results;
 }
 
-function projectionName(kind: ProjectionKind, id: string): string {
+function projectionName(kind: MaterializeProjection["kind"], id: string): string {
   const normalized = id.replaceAll("/", "--");
   if (!normalized.split("--").every((part) => safeId.test(part))) {
     throw new SaberError(`unsafe materialize asset id ${id}`, 2);
@@ -349,13 +350,9 @@ async function readRuntimeManifest(
   relativePath: string,
 ): Promise<RuntimeManifest | undefined> {
   try {
-    const value = JSON.parse(
+    return parseRuntimeManifest(
       await readFile(await resolveExistingPathWithinRoot(repositoryRoot, relativePath), "utf8"),
-    ) as unknown;
-    if (!isRuntimeManifest(value)) {
-      throw new SaberError("materialize runtime manifest is not managed by Saber", 2);
-    }
-    return value;
+    );
   } catch (error: unknown) {
     if (isMissingPath(error)) {
       return undefined;
@@ -375,7 +372,7 @@ type ProjectionBackup = {
 function managedProjectionPath(
   targetRoot: string,
   discoveryRelativePath: string,
-  projection: Projection,
+  projection: MaterializeProjection,
 ): string {
   if (
     !projection.name.startsWith(managedPrefix) ||
@@ -399,7 +396,7 @@ function managedProjectionPath(
 async function snapshotManagedProjection(
   targetRoot: string,
   discoveryRelativePath: string,
-  projection: Projection,
+  projection: MaterializeProjection,
 ): Promise<ProjectionBackup | undefined> {
   const path = managedProjectionPath(targetRoot, discoveryRelativePath, projection);
   try {
@@ -422,7 +419,7 @@ async function snapshotManagedProjection(
 async function removeManagedProjection(
   targetRoot: string,
   discoveryRelativePath: string,
-  projection: Projection,
+  projection: MaterializeProjection,
 ): Promise<void> {
   const path = managedProjectionPath(targetRoot, discoveryRelativePath, projection);
   try {
@@ -480,7 +477,7 @@ async function createProjection(
   discoveryRelativePath: string,
   name: string,
   source: string,
-): Promise<Projection> {
+): Promise<MaterializeProjection> {
   const discoveryRoot = resolveWithinRoot(targetRoot, discoveryRelativePath);
   await mkdir(discoveryRoot, { recursive: true });
   const linkPath = resolveWithinRoot(targetRoot, `${discoveryRelativePath}/${name}`);
@@ -499,9 +496,7 @@ async function createProjection(
     await unlink(linkPath);
     throw new SaberError(`tool projection ${name} did not resolve to its approved source`, 2);
   }
-  return {
-    name,
-    kind: name.includes("--context--")
+  const kind: MaterializeProjection["kind"] = name.includes("--context--")
       ? "context"
       : name.includes("--core-command--")
         ? "core-command"
@@ -511,9 +506,16 @@ async function createProjection(
             ? "workflow"
             : name.includes("--external-skill--")
               ? "external-skill"
-              : "team-skill",
+              : "team-skill";
+  return {
+    name,
+    kind,
     linkPath: `${discoveryRelativePath}/${name}`,
     sourcePath: source,
+    sourceDigest: kind === "context"
+      ? rawDigest(await readFile(join(source, "SKILL.md"), "utf8"))
+      : null,
+    linkTarget: relative(dirname(linkPath), source),
   };
 }
 
@@ -576,22 +578,181 @@ async function writeRuntimeManifest(
   relativePath: string,
   manifest: RuntimeManifest,
 ): Promise<void> {
-  const path = resolveWithinRoot(repositoryRoot, relativePath);
+  const path = await managedWritePath(repositoryRoot, relativePath);
   await mkdir(dirname(path), { recursive: true });
-  const temporaryPath = `${path}.tmp`;
-  await writeFile(temporaryPath, `${JSON.stringify(manifest, null, 2)}\n`, {
-    encoding: "utf8",
-    mode: 0o600,
-  });
-  await rename(temporaryPath, path);
+  const temporaryPath = `${path}.saber-materialize-${randomUUID()}.tmp`;
+  try {
+    await writeFile(temporaryPath, `${JSON.stringify(manifest, null, 2)}\n`, {
+      encoding: "utf8",
+      mode: 0o600,
+      flag: "wx",
+    });
+    await rename(temporaryPath, path);
+  } finally {
+    try { await unlink(temporaryPath); } catch (error: unknown) { if (!isMissingPath(error)) throw error; }
+  }
+}
+
+function rawDigest(value: string): string {
+  return createHash("sha256").update(value, "utf8").digest("hex");
+}
+
+async function readOptional(path: string): Promise<string | undefined> {
+  try {
+    return await readFile(path, "utf8");
+  } catch (error: unknown) {
+    if (isMissingPath(error)) return undefined;
+    throw error;
+  }
+}
+
+async function writeAtomic(path: string, text: string | undefined): Promise<void> {
+  if (text === undefined) {
+    try {
+      await unlink(path);
+    } catch (error: unknown) {
+      if (!isMissingPath(error)) throw error;
+    }
+    return;
+  }
+  await mkdir(dirname(path), { recursive: true });
+  const temporaryPath = `${path}.saber-materialize-${randomUUID()}.tmp`;
+  try {
+    await writeFile(temporaryPath, text, { encoding: "utf8", mode: 0o600, flag: "wx" });
+    await rename(temporaryPath, path);
+  } finally {
+    try { await unlink(temporaryPath); } catch (error: unknown) { if (!isMissingPath(error)) throw error; }
+  }
+}
+
+type TransactionFile = { path: string; content: string | null };
+type TransactionLink = { path: string; target: string | null };
+type TransactionScope = {
+  tool: ToolName;
+  target: string;
+  projectPath: string | null;
+  descriptors: string[];
+  projections: string[];
+};
+type TransactionSnapshot = {
+  schemaVersion: 3;
+  managedBy: "saber";
+  operation: "materialize";
+  tool: ToolName;
+  target: string;
+  scopes: [TransactionScope];
+  files: TransactionFile[];
+  links: TransactionLink[];
+  directories: string[];
+};
+
+function transactionPath(repositoryRoot: string, tool: ToolName, target: string): string {
+  return resolveWithinRoot(repositoryRoot, `.saber/runtime/transactions/materialize--${tool}--${target}.json`);
+}
+
+async function writeTransaction(path: string, snapshot: TransactionSnapshot): Promise<void> {
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, `${JSON.stringify(snapshot, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+}
+
+async function missingParentDirectories(
+  repositoryRoot: string,
+  paths: readonly string[],
+): Promise<string[]> {
+  const candidates = new Set<string>();
+  for (const path of paths) {
+    let parent = dirname(path).replaceAll("\\", "/");
+    while (parent !== "." && parent !== "/" && parent.length > 0) {
+      candidates.add(parent);
+      const next = dirname(parent).replaceAll("\\", "/");
+      if (next === parent) break;
+      parent = next;
+    }
+  }
+  const missing: string[] = [];
+  for (const path of [...candidates].sort((a, b) => a.split("/").length - b.split("/").length)) {
+    const absolute = await managedWritePath(repositoryRoot, path);
+    try {
+      await lstat(absolute);
+    } catch (error: unknown) {
+      if (!isMissingPath(error)) throw error;
+      missing.push(path);
+    }
+  }
+  return missing;
+}
+
+async function cleanupSnapshotDirectories(
+  repositoryRoot: string,
+  directories: readonly string[],
+): Promise<void> {
+  for (const directory of [...directories].sort((a, b) => b.split("/").length - a.split("/").length)) {
+    const path = await managedWritePath(repositoryRoot, directory);
+    try {
+      await rmdir(path);
+    } catch (error: unknown) {
+      const code = typeof error === "object" && error !== null && "code" in error
+        ? (error as { code?: unknown }).code
+        : undefined;
+      if (!isMissingPath(error) && code !== "ENOTEMPTY") throw error;
+    }
+  }
+}
+
+function repositoryRelativePath(repositoryRoot: string, path: string): string {
+  const lexical = relative(resolve(repositoryRoot), resolve(path)).replaceAll(sep, "/");
+  const canonical = relative(realpathSync(repositoryRoot), resolve(path)).replaceAll(sep, "/");
+  const value = lexical !== ".." && !lexical.startsWith("../") ? lexical : canonical;
+  if (value.length === 0 || value === ".." || value.startsWith("../")) {
+    throw new SaberError("materialize transaction path escapes the repository", 3);
+  }
+  return value;
+}
+
+async function restoreTransaction(
+  repositoryRoot: string,
+  path: string,
+  snapshot: TransactionSnapshot,
+): Promise<void> {
+  for (const file of snapshot.files) {
+    await writeAtomic(
+      await managedWritePath(repositoryRoot, file.path),
+      file.content ?? undefined,
+    );
+  }
+  for (const link of snapshot.links) {
+    const linkPath = await managedWritePath(repositoryRoot, link.path, true);
+    try { await unlink(linkPath); } catch (error: unknown) { if (!isMissingPath(error)) throw error; }
+    if (link.target !== null) {
+      await mkdir(dirname(linkPath), { recursive: true });
+      await symlink(link.target, linkPath, "dir");
+    }
+  }
+  await unlink(path).catch((error: unknown) => { if (!isMissingPath(error)) throw error; });
+  await cleanupSnapshotDirectories(repositoryRoot, snapshot.directories);
+}
+
+async function snapshotRuntimeDirectory(repositoryRoot: string, tool: ToolName, target: string): Promise<TransactionFile[]> {
+  const directory = resolveWithinRoot(repositoryRoot, `.saber/runtime/mcp/${tool}/${target}`);
+  let entries: string[];
+  try { entries = await readdir(directory); } catch (error: unknown) { if (isMissingPath(error)) return []; throw error; }
+  const files: TransactionFile[] = [];
+  for (const entry of entries) {
+    const path = join(directory, entry);
+    const stat = await lstat(path);
+    if (!stat.isFile() || stat.isSymbolicLink()) throw new SaberError("managed MCP runtime contains invalid content", 2);
+    files.push({ path: repositoryRelativePath(repositoryRoot, path), content: await readFile(path, "utf8") });
+  }
+  return files;
 }
 
 /** Materialize only one role's approved assets into a tool-native discovery directory. */
-export async function materialize(
+async function materializeLocked(
   repositoryRoot: string,
   config: RepositoryConfig,
   options: MaterializeOptions,
 ): Promise<MaterializeResult> {
+  await recoverLifecycleTransactions(repositoryRoot);
   const validationErrors = validateRepositoryConfig(config);
   if (validationErrors.length > 0) {
     throw new SaberError(`saber.yaml is invalid: ${validationErrors.join("; ")}`, 2);
@@ -623,6 +784,7 @@ export async function materialize(
     }
   }
 
+  const target = options.project ?? "root";
   const capabilities = selectedCapabilities(
     config,
     profile,
@@ -689,22 +851,18 @@ export async function materialize(
   const previous = await readRuntimeManifest(repositoryRoot, manifestRelativePath);
   if (
     previous !== undefined &&
-    (previous.tool !== tool || previous.project !== (options.project ?? null))
+    (previous.tool !== tool || previous.target !== target || previous.project !== (options.project ?? null))
   ) {
     throw new SaberError("materialize runtime manifest does not match its managed target", 2);
   }
 
-  await ensureLocalGitExclude(targetRoot, discoveryRelativePath);
   const effectiveProfile: RoleProfile = {
     ...profile,
     teamSkills: effectiveTeamSkills,
   };
-  const contextSource = await writeContextPackage(
+  const contextSource = resolveWithinRoot(
     repositoryRoot,
-    tool,
-    options.project,
-    effectiveProfile,
-    capabilities,
+    `${runtimeRoot}/${tool}/${options.project ?? "root"}/context`,
   );
   const sources: Array<{ name: string; source: string }> = [
     { name: projectionName("context", profile.id), source: contextSource },
@@ -733,9 +891,22 @@ export async function materialize(
   if (previous !== undefined) {
     for (const projection of previous.projections) {
       const backup = await snapshotManagedProjection(targetRoot, discoveryRelativePath, projection);
-      if (backup !== undefined) {
-        backups.push(backup);
+      if (backup === undefined) throw new SaberError(`managed projection ${projection.linkPath} is missing`, 2);
+      if (await realpath(backup.path) !== await realpath(resolve(repositoryRoot, projection.sourcePath))) {
+        throw new SaberError(`managed projection ${projection.linkPath} was redirected; remove it manually`, 2);
       }
+      if (backup.target !== projection.linkTarget) {
+        throw new SaberError(`managed projection ${projection.linkPath} was changed; remove it manually`, 2);
+      }
+      if (projection.kind === "context") {
+        const contextText = await readOptional(
+          resolve(repositoryRoot, projection.sourcePath, "SKILL.md"),
+        );
+        if (contextText === undefined || rawDigest(contextText) !== projection.sourceDigest) {
+          throw new SaberError("managed context runtime does not match its manifest", 2);
+        }
+      }
+      backups.push(backup);
     }
   }
   await preflightProjectionDestinations(
@@ -745,8 +916,122 @@ export async function materialize(
     new Set(backups.map(({ path }) => path)),
   );
 
-  const projections: Projection[] = [];
+  const resolvedMcp = resolveMcpRuntime(repositoryRoot, config, {
+    tool,
+    target,
+    project: options.project,
+    capabilities,
+  });
+
+  const adapter = toolConfigAdapters[tool];
+  const toolConfigRepoPath = `${projectRelativePath === undefined ? "" : `${projectRelativePath.replaceAll("\\", "/")}/`}${adapter.relativePath}`;
+  const toolConfigPath = await managedWritePath(repositoryRoot, toolConfigRepoPath);
+  const oldToolConfigText = await readOptional(toolConfigPath);
+  const oldManifestText = await readOptional(resolveWithinRoot(repositoryRoot, manifestRelativePath));
+  const descriptorDirectory = resolveWithinRoot(repositoryRoot, `.saber/runtime/mcp/${tool}/${target}`);
+  const oldRuntimeFiles = await snapshotRuntimeDirectory(repositoryRoot, tool, target);
+  if (previous !== undefined) {
+    if (
+      previous.toolConfig.path !== toolConfigRepoPath
+      || previous.activeIndex.path !== `.saber/runtime/mcp/${tool}/${target}/_active.json`
+      || previous.descriptors.some((descriptor) =>
+        descriptor.path !== `.saber/runtime/mcp/${tool}/${target}/${descriptor.id}.json`)
+    ) {
+      throw new SaberError("materialize runtime manifest contains an unsafe managed path", 2);
+    }
+    const activeText = await readOptional(resolveWithinRoot(repositoryRoot, previous.activeIndex.path));
+    if (activeText === undefined || rawDigest(activeText) !== previous.activeIndex.digest) {
+      throw new SaberError("managed MCP active index does not match its manifest", 2);
+    }
+    for (const descriptor of previous.descriptors) {
+      const text = await readOptional(resolveWithinRoot(repositoryRoot, descriptor.path));
+      if (text === undefined || rawDigest(text) !== descriptor.digest) {
+        throw new SaberError(`managed MCP descriptor ${descriptor.id} does not match its manifest`, 2);
+      }
+    }
+    adapter.verify(adapter.inspect(oldToolConfigText), previous.mcpEntries);
+  }
+  const contextFile = join(contextSource, "SKILL.md");
+  const excludePath = join(resolve(targetRoot, ".git"), "info", "exclude");
+  const files: TransactionFile[] = [
+    { path: repositoryRelativePath(repositoryRoot, toolConfigPath), content: oldToolConfigText ?? null },
+    { path: manifestRelativePath, content: oldManifestText ?? null },
+    { path: repositoryRelativePath(repositoryRoot, contextFile), content: await readOptional(contextFile) ?? null },
+    { path: repositoryRelativePath(repositoryRoot, excludePath), content: await readOptional(excludePath) ?? null },
+    ...oldRuntimeFiles,
+  ];
+  const descriptorIds = resolvedMcp.descriptors.map((descriptor) => descriptor.server.id);
+  for (const id of descriptorIds) {
+    const path = join(descriptorDirectory, `${id}.json`);
+    const relativePath = repositoryRelativePath(repositoryRoot, path);
+    if (!files.some((file) => file.path === relativePath)) {
+      files.push({ path: relativePath, content: await readOptional(path) ?? null });
+    }
+  }
+  const activeIndexPath = join(descriptorDirectory, "_active.json");
+  const activeIndexRelativePath = repositoryRelativePath(repositoryRoot, activeIndexPath);
+  if (!files.some((file) => file.path === activeIndexRelativePath)) {
+    files.push({ path: activeIndexRelativePath, content: await readOptional(activeIndexPath) ?? null });
+  }
+  const links: TransactionLink[] = [];
+  for (const projection of [...(previous?.projections ?? []), ...sources.map(({ name }) => ({
+    name,
+    kind: "team-skill" as const,
+    linkPath: `${discoveryRelativePath}/${name}`,
+    sourcePath: "skills",
+    sourceDigest: null,
+    linkTarget: "",
+  }))]) {
+    const path = resolve(targetRoot, projection.linkPath);
+    if (links.some((link) => link.path === path)) continue;
+    links.push({
+      path: repositoryRelativePath(repositoryRoot, path),
+      target: await readlink(path).catch((error: unknown) => isMissingPath(error) ? null : Promise.reject(error)),
+    });
+  }
+  const transactionFile = transactionPath(repositoryRoot, tool, target);
+  const transactionRelative = repositoryRelativePath(repositoryRoot, transactionFile);
+  const directories = await missingParentDirectories(
+    repositoryRoot,
+    [...files.map(({ path }) => path), ...links.map(({ path }) => path), transactionRelative],
+  );
+  const transaction: TransactionSnapshot = {
+    schemaVersion: 3,
+    managedBy: "saber",
+    operation: "materialize",
+    tool,
+    target,
+    scopes: [{
+      tool,
+      target,
+      projectPath: projectRelativePath ?? null,
+      descriptors: [...new Set(files.flatMap(({ path }) => {
+        const match = new RegExp(
+          `^\\.saber/runtime/mcp/${tool}/${target}/([a-z][a-z0-9-]{0,63})\\.json$`,
+          "u",
+        ).exec(path);
+        return match?.[1] === undefined ? [] : [match[1]];
+      }))].sort(),
+      projections: [...new Set(links.map(({ path }) => path.slice(path.lastIndexOf("/") + 1)))].sort(),
+    }],
+    files,
+    links,
+    directories,
+  };
+  await writeTransaction(transactionFile, transaction);
+
+  const projections: MaterializeProjection[] = [];
+  let finalToolConfigText: string | undefined;
+  let desiredEntries: ManagedMcpEntry[] = [];
   try {
+    await ensureLocalGitExclude(targetRoot, discoveryRelativePath);
+    await writeContextPackage(
+      repositoryRoot,
+      tool,
+      options.project,
+      effectiveProfile,
+      capabilities,
+    );
     for (const projection of previous?.projections ?? []) {
       await removeManagedProjection(targetRoot, discoveryRelativePath, projection);
     }
@@ -756,10 +1041,50 @@ export async function materialize(
       );
     }
 
+    await writeMcpRuntimeDescriptors(repositoryRoot, resolvedMcp);
+    const descriptorRecords: MaterializeDescriptor[] = [];
+    for (const descriptor of resolvedMcp.descriptors) {
+      const path = `.saber/runtime/mcp/${tool}/${target}/${descriptor.server.id}.json`;
+      const text = await readFile(resolveWithinRoot(repositoryRoot, path), "utf8");
+      descriptorRecords.push({
+        id: descriptor.server.id,
+        path,
+        digest: rawDigest(text),
+        descriptorFingerprint: descriptor.descriptorFingerprint,
+        sourceFingerprint: descriptor.sourceFingerprint,
+      });
+      desiredEntries.push(createManagedMcpEntry(`saber--${descriptor.server.id}`, {
+        command: process.execPath,
+        args: [resolve(repositoryRoot, "dist/cli.js"), "mcp", "bridge", "--descriptor", path],
+        cwd: repositoryRoot,
+      }));
+    }
+    const currentSnapshot = adapter.inspect(oldToolConfigText);
+    if (previous !== undefined) adapter.verify(currentSnapshot, previous.mcpEntries);
+    const withoutPrevious = previous === undefined || previous.mcpEntries.length === 0
+      ? oldToolConfigText
+      : adapter.remove(currentSnapshot, previous.mcpEntries);
+    const baseSnapshot = adapter.inspect(withoutPrevious === null ? undefined : withoutPrevious);
+    if (desiredEntries.length === 0) {
+      finalToolConfigText = withoutPrevious === null
+        ? (previous?.toolConfig.createdBySaber === true ? undefined : "")
+        : withoutPrevious;
+    } else {
+      finalToolConfigText = adapter.render(baseSnapshot, desiredEntries);
+    }
+    await writeAtomic(toolConfigPath, finalToolConfigText);
+    const activeText = await readFile(join(descriptorDirectory, "_active.json"), "utf8");
+    const teamConfig = { ...config } as Record<string, unknown>;
+    delete teamConfig.local;
+    const teamSourceText = await readOptional(resolveWithinRoot(repositoryRoot, "saber.yaml"));
+    const localSourceText = await readOptional(resolveWithinRoot(repositoryRoot, "saber.local.yaml"));
+    let externalText: string | undefined;
+    try { externalText = await readFile(resolveWithinRoot(repositoryRoot, externalManifestPath), "utf8"); } catch (error: unknown) { if (!isMissingPath(error)) throw error; }
     const manifest: RuntimeManifest = {
-      schemaVersion: 2,
+      schemaVersion: 3,
       managedBy: "saber",
       tool,
+      target,
       role: profile.id,
       project: options.project ?? null,
       capabilities,
@@ -770,10 +1095,31 @@ export async function materialize(
       workflows: [...profile.workflows],
       projections: projections.map((projection) => ({
         ...projection,
-        sourcePath: relative(repositoryRoot, projection.sourcePath).replaceAll(sep, "/"),
+        sourcePath: repositoryRelativePath(repositoryRoot, projection.sourcePath),
+        linkTarget: projection.linkTarget,
       })),
+      mcpServers: descriptorRecords.map(({ id }) => id),
+      mcpEntries: desiredEntries,
+      descriptors: descriptorRecords,
+      activeIndex: { path: activeIndexRelativePath, digest: rawDigest(activeText) },
+      toolConfig: {
+        path: toolConfigRepoPath,
+        existedBefore: oldToolConfigText !== undefined,
+        createdBySaber: previous?.toolConfig.createdBySaber
+          ?? (oldToolConfigText === undefined && finalToolConfigText !== undefined),
+        digest: finalToolConfigText === undefined ? null : rawDigest(finalToolConfigText),
+      },
+      sourceFingerprints: {
+        team: fingerprintMcpValue(teamSourceText ?? teamConfig),
+        local: config.local === undefined
+          ? null
+          : fingerprintMcpValue(localSourceText ?? config.local),
+        external: externalText === undefined ? null : fingerprintMcpValue(externalText),
+      },
     };
     await writeRuntimeManifest(repositoryRoot, manifestRelativePath, manifest);
+    await unlink(transactionFile);
+    await cleanupSnapshotDirectories(repositoryRoot, directories);
     return {
       ...manifest,
       manifestPath: manifestRelativePath,
@@ -783,18 +1129,22 @@ export async function materialize(
           : `${projectRelativePath.replaceAll("\\", "/")}/${discoveryRelativePath}`,
     };
   } catch (error: unknown) {
-    for (const projection of projections.reverse()) {
-      try {
-        await removeManagedProjection(targetRoot, discoveryRelativePath, projection);
-      } catch {
-        // Keep attempting the remaining cleanup before reporting the failure.
-      }
-    }
     try {
-      await restoreProjectionBackups(backups);
+      await restoreTransaction(repositoryRoot, transactionFile, transaction);
     } catch {
-      throw new SaberError("materialize failed and could not restore the previous projections", 3);
+      throw new SaberError("materialize failed and could not restore the previous transaction", 3);
     }
     throw error;
   }
+}
+
+export async function materialize(
+  repositoryRoot: string,
+  config: RepositoryConfig,
+  options: MaterializeOptions,
+): Promise<MaterializeResult> {
+  return withRepositoryLifecycleLock(
+    repositoryRoot,
+    () => materializeLocked(repositoryRoot, config, options),
+  );
 }

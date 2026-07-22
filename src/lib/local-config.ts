@@ -9,6 +9,8 @@ import {
   isSafeExternalAssetId,
   isSafeExternalAssetSource,
   isToolName,
+  parseMcpServers,
+  validateMcpServerConfigs,
 } from "./validation.js";
 
 const localConfigFilename = "saber.local.yaml";
@@ -74,9 +76,10 @@ function parseLocalConfig(value: unknown, preset: RepositoryConfig): LocalConfig
     "defaults",
     "projects",
     "extensions",
+    "mcp",
   ]);
-  if (root.schemaVersion !== 1) {
-    throw new SaberError(`${localConfigFilename}.schemaVersion must be 1`);
+  if (root.schemaVersion !== 2) {
+    throw new SaberError(`${localConfigFilename}.schemaVersion must be 2`);
   }
 
   const defaults: LocalConfig["defaults"] = {};
@@ -118,14 +121,24 @@ function parseLocalConfig(value: unknown, preset: RepositoryConfig): LocalConfig
   let skills: string[] = [];
   let prompts: string[] = [];
   let capabilities: string[] = [];
+  let mcpServers: string[] = [];
   if (root.extensions !== undefined) {
     const extensions = requireRecord(root.extensions, `${localConfigFilename}.extensions`);
-    assertKnownKeys(extensions, `${localConfigFilename}.extensions`, ["skills", "prompts", "capabilities"]);
+    assertKnownKeys(extensions, `${localConfigFilename}.extensions`, [
+      "skills",
+      "prompts",
+      "capabilities",
+      "mcpServers",
+    ]);
     skills = optionalStringArray(extensions.skills, `${localConfigFilename}.extensions.skills`);
     prompts = optionalStringArray(extensions.prompts, `${localConfigFilename}.extensions.prompts`);
     capabilities = optionalStringArray(
       extensions.capabilities,
       `${localConfigFilename}.extensions.capabilities`,
+    );
+    mcpServers = optionalStringArray(
+      extensions.mcpServers,
+      `${localConfigFilename}.extensions.mcpServers`,
     );
   }
 
@@ -155,7 +168,60 @@ function parseLocalConfig(value: unknown, preset: RepositoryConfig): LocalConfig
     }
   }
 
-  return { schemaVersion: 1, defaults, projects, extensions: { skills, prompts, capabilities } };
+  const teamMcpServerIds = new Set(preset.mcp.servers.map((server) => server.id));
+  const selectedMcpServers = new Set<string>();
+  for (const id of mcpServers) {
+    if (selectedMcpServers.has(id)) {
+      throw new SaberError(`${localConfigFilename}.extensions repeats an MCP server`);
+    }
+    selectedMcpServers.add(id);
+    if (!teamMcpServerIds.has(id)) {
+      throw new SaberError(`${localConfigFilename}.extensions contains an unknown MCP server`);
+    }
+  }
+
+  let personalMcpServers: LocalConfig["mcp"]["servers"] = [];
+  if (root.mcp !== undefined) {
+    const mcp = requireRecord(root.mcp, `${localConfigFilename}.mcp`);
+    assertKnownKeys(mcp, `${localConfigFilename}.mcp`, ["servers"]);
+    personalMcpServers = parseMcpServers(
+      mcp.servers,
+      `${localConfigFilename}.mcp.servers`,
+    );
+  }
+  if (
+    validateMcpServerConfigs(
+      personalMcpServers,
+      preset.capabilities,
+      "personal configuration",
+    ).length > 0
+  ) {
+    throw new SaberError(`${localConfigFilename}.mcp failed validation`);
+  }
+  for (const server of personalMcpServers) {
+    if (teamMcpServerIds.has(server.id)) {
+      throw new SaberError(`${localConfigFilename}.mcp cannot override a team MCP server`);
+    }
+    for (const tool of server.tools) {
+      const capability = capabilitiesById.get(tool.capability);
+      if (
+        capability === undefined ||
+        (capability.risk !== "L0" && capability.risk !== "L1")
+      ) {
+        throw new SaberError(
+          `${localConfigFilename}.mcp capabilities must use risk level L0 or L1`,
+        );
+      }
+    }
+  }
+
+  return {
+    schemaVersion: 2,
+    defaults,
+    projects,
+    extensions: { skills, prompts, capabilities, mcpServers },
+    mcp: { servers: personalMcpServers },
+  };
 }
 
 /** Missing local configuration is empty; an existing file must be a regular non-symlink. */
@@ -170,10 +236,11 @@ export async function loadLocalConfig(
   } catch (error: unknown) {
     if (isRecord(error) && error.code === "ENOENT") {
       return {
-        schemaVersion: 1,
+        schemaVersion: 2,
         defaults: {},
         projects: {},
-        extensions: { skills: [], prompts: [], capabilities: [] },
+        extensions: { skills: [], prompts: [], capabilities: [], mcpServers: [] },
+        mcp: { servers: [] },
       };
     }
     throw error;

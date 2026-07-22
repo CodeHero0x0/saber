@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import test from "node:test";
 
 import { runCli } from "../src/cli.js";
 import { validateRepositoryAssets } from "../src/commands/validate.js";
+import { materialize } from "../src/lib/materialize.js";
 import type { RepositoryConfig } from "../src/lib/models.js";
 import type { SafeProcessCommand, SafeProcessRunner } from "../src/lib/git.js";
 
@@ -21,6 +22,8 @@ function repositoryConfig(
     workspace: { schemaVersion: 1, tools: { default: "codex" }, projects },
     capabilities: [],
     connectors: [],
+    roleProfiles: [],
+    mcp: { servers: [] },
     externalAssets: { schemaVersion: 1, assets: [] },
   };
 }
@@ -121,21 +124,44 @@ test("validate catches role profile references to missing checked-in assets", as
   });
 });
 
-test("doctor distinguishes configured and missing connector variables without exposing values", async () => {
+test("doctor reports MCP prerequisites and risk routes without executing configured commands or exposing secrets", async () => {
+  const root = await mkdtemp(join(tmpdir(), "saber-doctor-mcp-"));
   const calls: SafeProcessCommand[] = [];
   const config = repositoryConfig();
-  config.connectors = [
+  config.capabilities = [
+    { id: "idea.read", risk: "L0", kind: "read" },
+    { id: "idea.write", risk: "L2", kind: "action" },
+  ];
+  config.mcp.servers = [
     {
-      id: "jira",
-      kind: "http",
-      requiredEnv: ["JIRA_BASE_URL", "JIRA_API_TOKEN"],
-      provides: [],
+      id: "idea",
+      transport: "stdio",
+      command: "tools/idea-server",
+      args: [],
+      cwd: ".",
+      env: { TOKEN: "IDEA_SECRET", OPTIONAL: "MISSING_IDEA_SECRET" },
+      tools: [
+        { name: "inspect", capability: "idea.read" },
+        { name: "update", capability: "idea.write" },
+      ],
     },
     {
-      id: "mysql-mcp",
-      kind: "mcp-command",
-      requiredEnv: ["MYSQL_MCP_COMMAND"],
-      provides: [],
+      id: "path-override",
+      transport: "stdio",
+      command: "node",
+      args: [],
+      cwd: ".",
+      env: { PATH: "MCP_PATH" },
+      tools: [],
+    },
+    {
+      id: "symlink-command",
+      transport: "stdio",
+      command: "linked-tool",
+      args: [],
+      cwd: ".",
+      env: { PATH: "LINK_PATH" },
+      tools: [],
     },
   ];
   const runner = recordingRunner((command) => {
@@ -148,46 +174,212 @@ test("doctor distinguishes configured and missing connector variables without ex
     return { exitCode: 127 };
   }, calls);
 
-  const result = await runCli(["doctor", "--json"], {
-    cwd: process.cwd(),
-    dependencies: {
-      doctorCommand: {
-        loadConfig: async () => config,
-        env: {
-          JIRA_BASE_URL: "https://jira.example.test",
-          JIRA_API_TOKEN: "not-for-output",
-        },
-        nodeVersion: "v20.20.2",
-        runner,
-        planExternalAssets: async () => [],
-      },
-    },
-  });
+  try {
+    await mkdir(join(root, "tools"), { recursive: true });
+    await writeFile(join(root, "tools", "idea-server"), "fixture\n", "utf8");
+    await chmod(join(root, "tools", "idea-server"), 0o700);
+    await mkdir(join(root, "empty-path"));
+    await symlink(join(root, "tools", "idea-server"), join(root, "empty-path", "linked-tool"));
+    await writeFile(
+      join(root, ".env"),
+      `IDEA_SECRET=not-for-output\nMCP_PATH=${join(root, "empty-path")}\nLINK_PATH=${join(root, "empty-path")}${delimiter}\n`,
+      "utf8",
+    );
 
-  assert.equal(result.exitCode, 0);
-  assert.equal(result.stderr, "");
-  assert.doesNotMatch(result.stdout, /not-for-output/u);
-  const output = JSON.parse(result.stdout) as {
-    node: { version: string };
-    git: { state: string; version?: string };
-    connectors: Array<{ id: string; state: string; missing: string[] }>;
-    tools: Array<{ name: string; state: string }>;
-  };
-  assert.deepEqual(output.node, { state: "available", version: "v20.20.2" });
-  assert.deepEqual(output.git, { state: "available", version: "git version 2.45.0" });
-  assert.deepEqual(output.connectors, [
-    { id: "jira", state: "configured", missing: [] },
-    { id: "mysql-mcp", state: "not-configured", missing: ["MYSQL_MCP_COMMAND"] },
-  ]);
-  assert.deepEqual(output.tools, [
-    { name: "codex", state: "available", version: "codex 1.0.0" },
-    { name: "claude", state: "not-available" },
-    { name: "opencode", state: "not-available" },
-  ]);
-  assert.deepEqual(
-    calls.map((command) => command.program),
-    ["git", "codex", "claude", "opencode"],
-  );
+    const result = await runCli(["doctor", "--json"], {
+      cwd: root,
+      dependencies: {
+        doctorCommand: {
+          loadConfig: async () => config,
+          env: {},
+          nodeVersion: "v20.20.2",
+          runner,
+          planExternalAssets: async () => [],
+        },
+      },
+    });
+
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.stderr, "");
+    assert.doesNotMatch(result.stdout, /not-for-output/u);
+    assert.doesNotMatch(result.stdout, /connected|configured/u);
+    const output = JSON.parse(result.stdout) as {
+      mcp: {
+        servers: Array<{
+          id: string;
+          state: string;
+          environment: { state: string; missing: string[] };
+          command?: { state: string };
+          cwd?: { state: string };
+          tools: Array<{ name: string; risk: string; route: string }>;
+        }>;
+        clients: Array<{ name: string; trust: string; restart: string }>;
+        policy: { l2: string; l3: string };
+      };
+    };
+    assert.deepEqual(output.mcp.servers, [
+      {
+        id: "idea",
+        transport: "stdio",
+        state: "invalid",
+        environment: { state: "missing", missing: ["MISSING_IDEA_SECRET"] },
+        command: { state: "available" },
+        cwd: { state: "available" },
+        tools: [
+          { name: "inspect", capability: "idea.read", risk: "L0", route: "native" },
+          { name: "update", capability: "idea.write", risk: "L2", route: "action-gateway" },
+        ],
+      },
+      {
+        id: "path-override",
+        transport: "stdio",
+        state: "invalid",
+        environment: { state: "available", missing: [] },
+        command: { state: "missing" },
+        cwd: { state: "available" },
+        tools: [],
+      },
+      {
+        id: "symlink-command",
+        transport: "stdio",
+        state: "valid",
+        environment: { state: "available", missing: [] },
+        command: { state: "available" },
+        cwd: { state: "available" },
+        tools: [],
+      },
+    ]);
+    assert.deepEqual(output.mcp.clients, [
+      { name: "codex", trust: "unknown", restart: "unknown" },
+      { name: "claude", trust: "unknown", restart: "unknown" },
+      { name: "opencode", trust: "unknown", restart: "unknown" },
+    ]);
+    assert.deepEqual(output.mcp.policy, {
+      oauth: "unsupported",
+      l2: "action-gateway",
+      l3: "forbidden",
+    });
+    assert.deepEqual(calls.map((command) => command.program), ["git", "codex", "claude", "opencode"]);
+
+    await mkdir(join(root, ".saber/runtime"), { recursive: true });
+    await symlink(join(root, "tools"), join(root, ".saber/runtime/materialize"));
+    const unsafeRuntime = JSON.parse((await runCli(["doctor", "--json"], {
+      cwd: root,
+      dependencies: {
+        doctorCommand: {
+          loadConfig: async () => config,
+          env: {},
+          runner,
+          planExternalAssets: async () => [],
+        },
+      },
+    })).stdout) as { mcp: { runtime: { targets: Array<{ state: string; issues: string[] }> } } };
+    assert.ok(unsafeRuntime.mcp.runtime.targets.every(({ state }) => state === "invalid"));
+    assert.ok(unsafeRuntime.mcp.runtime.targets.every(({ issues }) =>
+      issues.includes("manifest-directory-invalid")));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("doctor detects materialized MCP drift and unresolved transactions without repairing them", async () => {
+  const root = await mkdtemp(join(tmpdir(), "saber-doctor-runtime-"));
+  const config = repositoryConfig();
+  config.workspace.tools.supported = ["codex", "claude", "opencode"];
+  config.capabilities = [{ id: "mysql.read", risk: "L0", kind: "read" }];
+  config.roleProfiles = [{
+    id: "dev",
+    teamSkills: [],
+    externalSkills: [],
+    workflows: [],
+    capabilities: ["mysql.read"],
+  }];
+  config.mcp.servers = [{
+    id: "mysql",
+    transport: "stdio",
+    command: "node",
+    args: [],
+    env: {},
+    tools: [{ name: "query", capability: "mysql.read" }],
+  }];
+
+  try {
+    await mkdir(join(root, ".git/info"), { recursive: true });
+    for (const name of ["saber", "saber-intake", "saber-focus", "saber-status", "saber-refine", "saber-help"]) {
+      await cp(join(process.cwd(), "skills", name), join(root, "skills", name), { recursive: true });
+    }
+    const materialized = await materialize(root, config, { role: "dev", tool: "claude" });
+    const nativePath = join(root, ".mcp.json");
+    const nativeConfig = JSON.parse(await readFile(nativePath, "utf8")) as Record<string, unknown>;
+    await writeFile(nativePath, `${JSON.stringify({ ...nativeConfig, userSetting: true }, null, 2)}\n`, "utf8");
+    const dependencies = {
+      loadConfig: async () => config,
+      env: {},
+      runner: async () => ({ exitCode: 1, stdout: "", stderr: "" }),
+      planExternalAssets: async () => [],
+    };
+
+    const valid = JSON.parse((await runCli(["doctor", "--json"], {
+      cwd: root,
+      dependencies: { doctorCommand: dependencies },
+    })).stdout) as {
+      mcp: { runtime: { targets: Array<{ state: string; issues: string[] }> }; clients: Array<{ name: string; trust: string; restart: string }> };
+    };
+    assert.deepEqual(valid.mcp.runtime.targets, [{
+      tool: "claude",
+      target: "root",
+      project: null,
+      state: "valid",
+      issues: [],
+    }]);
+    assert.deepEqual(valid.mcp.clients.find(({ name }) => name === "claude"), {
+      name: "claude",
+      trust: "pending",
+      restart: "pending",
+    });
+
+    await writeFile(join(root, ".saber/runtime/mcp/claude/root/mysql.json"), "{}\n", "utf8");
+    await writeFile(join(root, ".saber/runtime/mcp/claude/root/_active.json"), "{}\n", "utf8");
+    await writeFile(nativePath, "{}\n", "utf8");
+    await mkdir(join(root, ".saber/runtime/transactions"), { recursive: true });
+    await writeFile(join(root, ".saber/runtime/transactions/uninstall.json"), "pending\n", "utf8");
+    await writeFile(join(root, ".saber/runtime/materialize/codex"), "unsafe\n", "utf8");
+
+    const driftedResult = await runCli(["doctor", "--json"], {
+      cwd: root,
+      dependencies: { doctorCommand: dependencies },
+    });
+    const drifted = JSON.parse(driftedResult.stdout) as {
+      mcp: {
+        runtime: {
+          targets: Array<{ state: string; issues: string[] }>;
+          transactions: { state: string; entries: string[] };
+        };
+      };
+    };
+    assert.equal(driftedResult.exitCode, 0);
+    const claudeTarget = drifted.mcp.runtime.targets.find(({ tool }) => tool === "claude");
+    assert.equal(claudeTarget?.state, "invalid");
+    assert.deepEqual(claudeTarget?.issues, [
+      "active-index-drift",
+      "descriptor-drift:mysql",
+      "native-config-drift",
+    ]);
+    assert.deepEqual(drifted.mcp.runtime.targets.find(({ tool }) => tool === "codex"), {
+      tool: "codex",
+      target: "unknown",
+      project: null,
+      state: "invalid",
+      issues: ["manifest-directory-invalid"],
+    });
+    assert.deepEqual(drifted.mcp.runtime.transactions, {
+      state: "unresolved",
+      entries: ["uninstall.json"],
+    });
+    assert.equal(materialized.manifestPath, ".saber/runtime/materialize/claude/root.json");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("status reports a missing project and a clean repository independently", async () => {

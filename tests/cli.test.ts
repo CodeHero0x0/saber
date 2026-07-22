@@ -130,6 +130,50 @@ test("direct CLI execution writes an unknown-command error only to stderr", asyn
   });
 });
 
+test("CLI dispatches the internal MCP bridge command", async () => {
+  let descriptorPath: string | undefined;
+  const result = await runCli(["mcp", "bridge", "--descriptor", ".saber/runtime/mcp/codex/workspace/demo.json"], {
+    cwd: projectRoot,
+    dependencies: {
+      mcpCommand: {
+        runBridge: async (options) => {
+          descriptorPath = options.descriptorPath;
+        },
+      },
+    },
+  });
+
+  assert.deepEqual(result, { exitCode: 0, stdout: "", stderr: "" });
+  assert.equal(descriptorPath, ".saber/runtime/mcp/codex/workspace/demo.json");
+});
+
+test("CLI dispatches uninstall preview and preserves its confirmation token", async () => {
+  let request: unknown;
+  const plan = {
+    schemaVersion: 1 as const,
+    operation: "uninstall" as const,
+    selection: { all: false, tool: "codex" as const, project: null },
+    targets: [],
+    preserved: ["projects"],
+    confirmationToken: "sha256:test",
+  };
+  const result = await runCli(["uninstall", "--tool", "codex", "--json"], {
+    cwd: projectRoot,
+    dependencies: {
+      uninstallCommand: {
+        runUninstall: async (_root, value) => {
+          request = value;
+          return { applied: false, plan };
+        },
+      },
+    },
+  });
+  assert.equal(result.exitCode, 0);
+  assert.equal(result.stderr, "");
+  assert.deepEqual(request, { all: false, apply: false, json: true, tool: "codex" });
+  assert.equal(JSON.parse(result.stdout).plan.confirmationToken, "sha256:test");
+});
+
 test("packaged CLI executes through an npm-style symlink", async () => {
   const build = await executeProcess(tscBinary, ["-p", "tsconfig.json"]);
   assert.deepEqual(build, { exitCode: 0, stdout: "", stderr: "" });

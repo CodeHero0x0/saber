@@ -1,5 +1,5 @@
 # 团队配置只声明项目差异；安全策略、角色、能力和连接器来自 standard preset。
-schemaVersion: 2
+schemaVersion: 3
 name: Saber
 
 workspace:
@@ -24,3 +24,35 @@ workspace:
 # standard preset 提供团队约定的 Superpowers 与 OpenSpec 外部技能包。
 externalSkills:
   preset: standard
+
+# 团队 MCP 只保存启动参数和环境变量名，不保存密钥值，也不解析 shell 命令字符串。
+mcp:
+  # 默认不启用任何 MCP；请验证真实命令或 URL 后再取消下面示例的注释。
+  servers: []
+
+  # 本地 stdio 示例：command 与 args 分开传给子进程，cwd 必须留在仓库内。
+  # - id: idea-mcp
+  #   transport: stdio
+  #   command: node
+  #   args:
+  #     - tools/idea-mcp/server.js
+  #   cwd: .
+  #   env:
+  #     IDEA_TOKEN: IDEA_MCP_TOKEN
+  #   tools:
+  #     - name: inspect_project
+  #       capability: idea.project.read
+  #     - name: execute_command
+  #       capability: idea.command.execute
+
+  # 远程 HTTP 示例：header 的值是 .env 变量名，不是认证信息本身。
+  # - id: mysql-mcp
+  #   transport: http
+  #   url: https://mcp.example.com/mysql
+  #   headers:
+  #     Authorization: MYSQL_MCP_AUTH
+  #   tools:
+  #     - name: query
+  #       capability: mysql.read
+  #     - name: execute
+  #       capability: mysql.write

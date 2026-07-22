@@ -12,6 +12,7 @@ import {
   executeAction,
 } from "../src/lib/actions.js";
 import type { HttpFetch } from "../src/lib/http.js";
+import type { McpClientLike } from "../src/lib/mcp/client.js";
 import type { Capability, RepositoryConfig } from "../src/lib/models.js";
 import type { SafeProcessCommand, SafeProcessRunner } from "../src/lib/git.js";
 
@@ -51,6 +52,7 @@ function configuration(
     capabilities,
     connectors,
     externalAssets: { schemaVersion: 1, assets: [] },
+    mcp: { servers: [] },
   };
 }
 
@@ -92,6 +94,56 @@ function gitPushConfig(): RepositoryConfig {
   );
 }
 
+function mcpConfig(options: { read?: boolean; duplicate?: boolean } = {}): RepositoryConfig {
+  const capabilities: Capability[] = [
+    capability("mysql.write", "L2"),
+    ...(options.read === false ? [] : [capability("mysql.read", "L0")]),
+  ];
+  const tools = [
+    { name: "execute", capability: "mysql.write" },
+    ...(options.read === false ? [] : [{ name: "query", capability: "mysql.read" }]),
+    ...(options.duplicate ? [{ name: "execute-again", capability: "mysql.write" }] : []),
+  ];
+  return {
+    ...configuration(capabilities, []),
+    mcp: {
+      servers: [
+        {
+          id: "mysql",
+          transport: "stdio",
+          command: "node",
+          args: ["mock-mysql.js"],
+          env: { DATABASE_URL: "PERSONAL_MYSQL_URL" },
+          tools,
+        },
+      ],
+    },
+  } as RepositoryConfig;
+}
+
+function mcpClient(
+  tools: string[],
+  handler: (name: string, args: Record<string, unknown> | undefined) => Promise<unknown>,
+): McpClientLike & { listCalls: number; callNames: string[]; closeCalls: number } {
+  const client = {
+    listCalls: 0,
+    callNames: [] as string[],
+    closeCalls: 0,
+    async listTools() {
+      client.listCalls += 1;
+      return { tools: tools.map((name) => ({ name, inputSchema: {} })) };
+    },
+    async callTool(request: { name: string; arguments?: Record<string, unknown> }) {
+      client.callNames.push(request.name);
+      return handler(request.name, request.arguments);
+    },
+    async close() {
+      client.closeCalls += 1;
+    },
+  };
+  return client;
+}
+
 async function temporaryRoot(): Promise<string> {
   return mkdtemp(join(tmpdir(), "saber-actions-"));
 }
@@ -118,7 +170,7 @@ function recordingFetch(
   };
 }
 
-test("canonical action preview tokens are deterministic across JSON key order", async () => {
+test("canonical payloads remain stable while every action preview token is unique", async () => {
   const root = await temporaryRoot();
   const action = capability("jira.update", "L2", "jira");
   const firstPayload = { fields: { summary: "Ship safely", labels: ["saber"] }, key: "PROJ-123" };
@@ -127,13 +179,21 @@ test("canonical action preview tokens are deterministic across JSON key order", 
   try {
     assert.equal(canonicalizeJsonPayload(firstPayload), canonicalizeJsonPayload(reorderedPayload));
     assert.equal(
-      calculatePreviewToken("jira.update", canonicalizeJsonPayload(firstPayload)),
-      calculatePreviewToken("jira.update", canonicalizeJsonPayload(reorderedPayload)),
+      calculatePreviewToken("jira.update", canonicalizeJsonPayload(firstPayload), "nonce-a"),
+      calculatePreviewToken("jira.update", canonicalizeJsonPayload(reorderedPayload), "nonce-a"),
+    );
+    assert.notEqual(
+      calculatePreviewToken("jira.update", canonicalizeJsonPayload(firstPayload), "nonce-a"),
+      calculatePreviewToken("jira.update", canonicalizeJsonPayload(firstPayload), "nonce-b"),
     );
 
     const preview = await createActionPreview(root, action, firstPayload, {
       env: jiraEnvironment,
     });
+    const reorderedPreview = await createActionPreview(root, action, reorderedPayload, {
+      env: jiraEnvironment,
+    });
+    assert.notEqual(preview.token, reorderedPreview.token);
     assert.match(preview.token, /^sha256:[a-f0-9]{64}$/u);
     const record = JSON.parse(
       await readFile(
@@ -147,12 +207,48 @@ test("canonical action preview tokens are deterministic across JSON key order", 
         "utf8",
       ),
     ) as Record<string, unknown>;
-    assert.equal(record.schemaVersion, 1);
+    assert.equal(record.schemaVersion, 2);
     assert.equal(record.token, preview.token);
+    assert.match(String(record.nonce), /^[a-f0-9]{64}$/u);
     assert.equal(record.capabilityId, "jira.update");
     assert.equal(record.payloadDigest, preview.payloadDigest);
     assert.equal(record.state, "ready");
     assert.match(String(record.targetDigest), /^sha256:[a-f0-9]{64}$/u);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a fresh preview never makes an already consumed confirmation token reusable", async () => {
+  const root = await temporaryRoot();
+  const config = mcpConfig({ read: false });
+  const capability = config.capabilities[0] as Capability;
+  const payload = { query: "UPDATE accounts SET active = true" };
+  const firstClient = mcpClient(["execute"], async () => ({ accepted: true }));
+  const secondClient = mcpClient(["execute"], async () => ({ accepted: true }));
+  try {
+    const first = await createActionPreview(root, capability, payload, { config });
+    await executeAction(root, config, capability, payload, {
+      confirmation: first.token,
+      connectMcp: async () => firstClient,
+    });
+    const second = await createActionPreview(root, capability, payload, { config });
+    assert.notEqual(second.token, first.token);
+
+    await assert.rejects(
+      () => executeAction(root, config, capability, payload, {
+        confirmation: first.token,
+        connectMcp: async () => secondClient,
+      }),
+      /preview/u,
+    );
+    assert.deepEqual(secondClient.callNames, []);
+
+    await executeAction(root, config, capability, payload, {
+      confirmation: second.token,
+      connectMcp: async () => secondClient,
+    });
+    assert.deepEqual(secondClient.callNames, ["execute"]);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -969,17 +1065,10 @@ test("connector failures redact API tokens, base URL query data, and payload tex
   }
 });
 
-test("missing connector environment pauses safely and unsupported MCP actions do not pretend to execute", async () => {
+test("missing connector environment and missing MCP mappings stop safely", async () => {
   const root = await temporaryRoot();
   const jira = jiraConfig("L0");
-  const mysql = configuration([capability("mysql.read", "L0", "mysql-mcp")], [
-    {
-      id: "mysql-mcp",
-      kind: "mcp-command",
-      requiredEnv: ["MYSQL_MCP_COMMAND"],
-      provides: ["mysql.read"],
-    },
-  ]);
+  const mysql = configuration([capability("mysql.read", "L0")], []);
 
   try {
     await assert.rejects(
@@ -1081,6 +1170,230 @@ test("action parser rejects malformed flags while preview reads only the non-sec
       assert.equal(result.stderr, "");
       assert.match((JSON.parse(result.stdout) as { errors: string[] }).errors[0] ?? "", /(duplicate|requires|unknown flag)/u);
     }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("MCP L2 preview resolves one tool, redacts arguments, and binds server plus config", async () => {
+  const root = await temporaryRoot();
+  const config = mcpConfig();
+  const payload = {
+    query: "UPDATE accounts SET password = 'mcp-secret'",
+    password: "mcp-secret",
+  };
+  try {
+    const preview = await createActionPreview(root, config.capabilities[0] as Capability, payload, {
+      config,
+    });
+    assert.equal(preview.risk, "L2");
+    assert.equal(preview.operation?.target.connector, "mcp");
+    assert.equal(preview.operation?.target.path, "mysql/execute");
+    assert.equal(preview.operation?.account.credentialVariable, "configured MCP environment references");
+    assert.doesNotMatch(JSON.stringify(preview.operation), /mcp-secret/u);
+
+    const reordered = await createActionPreview(
+      root,
+      config.capabilities[0] as Capability,
+      { password: "mcp-secret", query: "UPDATE accounts SET password = 'mcp-secret'" },
+      { config },
+    );
+    assert.notEqual(reordered.token, preview.token);
+
+    const drifted = structuredClone(config);
+    drifted.mcp.servers[0] = {
+      ...drifted.mcp.servers[0]!,
+      transport: "stdio",
+      command: "other-node",
+    };
+    const changed = await createActionPreview(root, drifted.capabilities[0] as Capability, payload, {
+      config: drifted,
+    });
+    assert.notEqual(changed.token, preview.token);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("MCP L2 preview redacts embedded credential assignments in JSON and text output", async () => {
+  const root = await temporaryRoot();
+  const config = mcpConfig();
+  const payloadPath = await writePayload(root, "embedded-mcp-secrets.json", {
+    query: "UPDATE accounts SET password='leaked-password', display_name='Visible Name'",
+    text: "token=leaked-token Authorization: Bearer leaked-bearer keep=this-visible",
+    url: "https://example.test/run?api-key=leaked-api-key&page=2&secret=leaked-secret",
+    metadata: "client_secret=leaked-client-secret Authorization=Basic leaked-basic trace=visible",
+  });
+
+  try {
+    for (const json of [true, false]) {
+      const result = await runCli(
+        [
+          "action",
+          "preview",
+          "mysql.write",
+          "--payload",
+          payloadPath,
+          ...(json ? ["--json"] : []),
+        ],
+        {
+          cwd: root,
+          dependencies: { actionCommand: { loadConfig: async () => config } },
+        },
+      );
+      assert.equal(result.exitCode, 0, result.stderr || result.stdout);
+      assert.doesNotMatch(
+        result.stdout,
+        /leaked-(?:password|token|bearer|api-key|secret|client-secret|basic)/u,
+      );
+      assert.match(result.stdout, /Visible Name/u);
+      assert.match(result.stdout, /keep=this-visible/u);
+      assert.match(result.stdout, /page=2/u);
+      assert.match(result.stdout, /trace=visible/u);
+      assert.match(result.stdout, /\[REDACTED\]/u);
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("MCP L2 execution calls the write once but stays uncertain without an explicit reconciliation matcher", async () => {
+  const root = await temporaryRoot();
+  const config = mcpConfig();
+  const payload = { query: "UPDATE accounts SET active = true" };
+  const client = mcpClient(["execute", "query"], async (name) =>
+    name === "execute" ? { accepted: true } : { rows: [{ active: true }] },
+  );
+  let connections = 0;
+  try {
+    const preview = await createActionPreview(root, config.capabilities[0] as Capability, payload, {
+      config,
+    });
+    const result = await executeAction(root, config, config.capabilities[0] as Capability, payload, {
+      confirmation: preview.token,
+      connectMcp: async () => {
+        connections += 1;
+        return client;
+      },
+    });
+    assert.equal(result.state, "uncertain");
+    assert.equal(result.connector, "mcp");
+    assert.equal(result.method, "CALL");
+    assert.equal(result.path, "mysql/execute");
+    assert.deepEqual(client.callNames, ["execute", "query"]);
+    assert.equal(client.listCalls, 1);
+    assert.equal(client.closeCalls, 1);
+    assert.equal(connections, 1);
+    assert.equal(result.reconciliation?.state, "observed");
+    assert.equal(result.reconciliation?.tool, "query");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("MCP L2 execution redacts client environment secrets from write and reconciliation results", async () => {
+  const root = await temporaryRoot();
+  const config = mcpConfig();
+  const payload = { query: "UPDATE accounts SET active = true" };
+  const environmentSecret = "upstream-environment-secret";
+  const client = mcpClient(["execute", "query"], async (name) =>
+    name === "execute"
+      ? { message: `write accepted with ${environmentSecret}`, status: "accepted" }
+      : { message: `read used ${environmentSecret}`, rows: [{ active: true }] },
+  );
+  Object.defineProperty(client, "secrets", {
+    value: Object.freeze([environmentSecret]),
+    enumerable: false,
+  });
+
+  try {
+    const preview = await createActionPreview(root, config.capabilities[0] as Capability, payload, {
+      config,
+    });
+    const result = await executeAction(root, config, config.capabilities[0] as Capability, payload, {
+      confirmation: preview.token,
+      connectMcp: async () => client,
+    });
+    const serialized = JSON.stringify(result);
+
+    assert.doesNotMatch(serialized, new RegExp(environmentSecret, "u"));
+    assert.match(serialized, /write accepted with \[REDACTED\]/u);
+    assert.match(serialized, /read used \[REDACTED\]/u);
+    assert.deepEqual(client.callNames, ["execute", "query"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("MCP L2 execution returns explicit uncertain without a read capability and never retries the write", async () => {
+  const root = await temporaryRoot();
+  const config = mcpConfig({ read: false });
+  const payload = { query: "UPDATE accounts SET active = true" };
+  const client = mcpClient(["execute"], async () => ({ accepted: true }));
+  try {
+    const preview = await createActionPreview(root, config.capabilities[0] as Capability, payload, {
+      config,
+    });
+    const result = await executeAction(root, config, config.capabilities[0] as Capability, payload, {
+      confirmation: preview.token,
+      connectMcp: async () => client,
+    });
+    assert.equal(result.state, "uncertain");
+    assert.equal(result.reconciliation?.state, "unavailable");
+    assert.deepEqual(client.callNames, ["execute"]);
+    assert.equal(client.closeCalls, 1);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("MCP L2 action stops on duplicate mapping, upstream drift, missing tools, and non-L2 risks", async () => {
+  const root = await temporaryRoot();
+  const payload = { query: "UPDATE accounts SET active = true" };
+  try {
+    const duplicate = mcpConfig({ duplicate: true });
+    await assert.rejects(
+      () => createActionPreview(root, duplicate.capabilities[0] as Capability, payload, { config: duplicate }),
+      /exactly one MCP server\/tool mapping/u,
+    );
+
+    const config = mcpConfig();
+    const preview = await createActionPreview(root, config.capabilities[0] as Capability, payload, { config });
+    const drifted = structuredClone(config);
+    drifted.mcp.servers[0] = { ...drifted.mcp.servers[0]!, transport: "stdio", command: "changed-node" };
+    let connected = false;
+    await assert.rejects(
+      () => executeAction(root, drifted, drifted.capabilities[0] as Capability, payload, {
+        confirmation: preview.token,
+        connectMcp: async () => {
+          connected = true;
+          return mcpClient(["execute", "query"], async () => ({}));
+        },
+      }),
+      /preview/u,
+    );
+    assert.equal(connected, false);
+
+    const missingToolClient = mcpClient(["query"], async () => ({}));
+    const freshPreview = await createActionPreview(root, config.capabilities[0] as Capability, payload, { config });
+    await assert.rejects(
+      () => executeAction(root, config, config.capabilities[0] as Capability, payload, {
+        confirmation: freshPreview.token,
+        connectMcp: async () => missingToolClient,
+      }),
+      /upstream MCP tool/u,
+    );
+    assert.deepEqual(missingToolClient.callNames, []);
+
+    const read = capability("mysql.read", "L0");
+    await assert.rejects(
+      () => createActionPreview(root, read, { query: "SELECT 1" }, { config: { ...config, capabilities: [read] } }),
+      /native L0\/L1 MCP tool/u,
+    );
+    await assert.rejects(
+      () => createActionPreview(root, { id: "mysql.write", risk: "L3", kind: "action" }, payload, { config }),
+      /L3/u,
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }

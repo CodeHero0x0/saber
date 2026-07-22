@@ -36,6 +36,14 @@ import {
   type MaterializeCommandDependencies,
 } from "./commands/materialize.js";
 import {
+  runMcpCommand,
+  type McpCommandDependencies,
+} from "./commands/mcp.js";
+import {
+  runUninstallCommand,
+  type UninstallCommandDependencies,
+} from "./commands/uninstall.js";
+import {
   runConvenienceCommand,
   type ConvenienceCommandDependencies,
 } from "./commands/convenience.js";
@@ -69,6 +77,9 @@ Advanced commands:
   saber action preview <capability> --payload <json-file> [--json]
   saber action execute <capability> --payload <json-file> [--confirm <preview-token>] [--json]
   saber materialize [--tool <codex|claude|opencode>] --role <ba|dev|qa> [--project <name>] [--capability <id>] [--json]
+  saber uninstall --tool <codex|claude|opencode> [--project <name>] [--apply --confirm <preview-token>] [--json]
+  saber uninstall --all [--apply --confirm <preview-token>] [--json]
+  saber mcp bridge --descriptor <path>
   saber workitem create [WORKITEM-KEY] --source-type <chat|jira|document|manual> --source-title <title> --source-file <path> [--source-origin <origin>] [--captured-at <ISO timestamp>] [--source-reference <reference>] --project <name> [--json]
   saber workitem handoff <WORKITEM-KEY> --role <ba|dev|qa> --summary <text> --risk <text> --next <text> [--fingerprint <hash>] [--json]
   saber workitem drift <WORKITEM-KEY> --fingerprint <hash> [--json]
@@ -88,6 +99,8 @@ export type CliDependencies = {
   workitemCommand?: WorkitemCommandDependencies;
   actionCommand?: ActionCommandDependencies;
   materializeCommand?: MaterializeCommandDependencies;
+  mcpCommand?: McpCommandDependencies;
+  uninstallCommand?: UninstallCommandDependencies;
   convenienceCommand?: ConvenienceCliDependencies;
 };
 
@@ -157,6 +170,20 @@ export async function runCli(
     return runMaterializeCommand(argv.slice(1), {
       cwd,
       dependencies: dependencies?.materializeCommand,
+    });
+  }
+
+  if (command === "mcp") {
+    return runMcpCommand(argv.slice(1), {
+      cwd,
+      dependencies: dependencies?.mcpCommand,
+    });
+  }
+
+  if (command === "uninstall") {
+    return runUninstallCommand(argv.slice(1), {
+      cwd,
+      dependencies: dependencies?.uninstallCommand,
     });
   }
 

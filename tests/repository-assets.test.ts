@@ -37,6 +37,7 @@ test("the checked-in catalog has every required capability and safe connector te
   );
 
   assert.deepEqual(validateRepositoryConfig(config), []);
+  assert.deepEqual(config.mcp.servers, []);
   assert.deepEqual(config.workspace.tools.supported, ["codex", "claude", "opencode"]);
   assert.deepEqual(config.workspace.projects.map((project) => project.name), ["frontend", "backend"]);
 
@@ -51,11 +52,12 @@ test("the checked-in catalog has every required capability and safe connector te
   assert.equal(connectorById.get("jira")?.kind, "http");
   assert.equal(connectorById.get("gitlab")?.kind, "http");
   assert.equal(connectorById.get("git")?.kind, "git-cli");
-  assert.equal(connectorById.get("idea-mcp")?.kind, "mcp-command");
-  assert.equal(connectorById.get("mysql-mcp")?.kind, "mcp-command");
+  assert.equal(connectorById.has("idea-mcp"), false);
+  assert.equal(connectorById.has("mysql-mcp"), false);
+  assert.equal(capabilityById.get("idea.project.read")?.connector, undefined);
+  assert.equal(capabilityById.get("mysql.read")?.connector, undefined);
 
   for (const connector of config.connectors) {
-    assert.ok(connector.requiredEnv.length > 0, `${connector.id} needs environment names`);
     for (const name of connector.requiredEnv) {
       assert.match(name, /^[A-Z][A-Z0-9_]*$/u);
     }
@@ -67,9 +69,8 @@ test("the checked-in catalog has every required capability and safe connector te
 
 test("saber.yaml stays minimal while the preset keeps connector values unset", async () => {
   const content = await readFile(join(repositoryRoot, "saber.yaml"), "utf8");
+  const parsed = parse(content) as { mcp?: { servers?: unknown } };
   const environmentNames = [
-    "IDEA_MCP_COMMAND",
-    "MYSQL_MCP_COMMAND",
     "JIRA_BASE_URL",
     "JIRA_ACCOUNT_ID",
     "JIRA_API_TOKEN",
@@ -82,7 +83,8 @@ test("saber.yaml stays minimal while the preset keeps connector values unset", a
   for (const section of ["workspace", "externalSkills"]) {
     assert.match(content, new RegExp(`^${section}:`, "mu"));
   }
-  assert.match(content, /^schemaVersion: 2$/mu);
+  assert.match(content, /^schemaVersion: 3$/mu);
+  assert.deepEqual(parsed.mcp?.servers, []);
   assert.match(content, /^\s+preset: standard$/mu);
   assert.doesNotMatch(content, /^(?:safety|capabilities|connectors|externalAssets|roleProfiles):/mu);
   for (const name of environmentNames) {
@@ -108,10 +110,16 @@ test("local configuration is ignored while its documented example is tracked", a
     readFile(join(repositoryRoot, "saber.local.example.yaml"), "utf8"),
   ]);
   assert.match(ignore, /^\/saber\.local\.yaml$/mu);
-  assert.match(example, /^schemaVersion: 1$/mu);
+  assert.match(example, /^schemaVersion: 2$/mu);
   assert.match(example, /^defaults:$/mu);
   assert.match(example, /^projects:$/mu);
   assert.match(example, /^extensions:$/mu);
+  const parsedExample = parse(example) as {
+    extensions?: { mcpServers?: unknown };
+    mcp?: { servers?: unknown };
+  };
+  assert.deepEqual(parsedExample.extensions?.mcpServers, []);
+  assert.deepEqual(parsedExample.mcp?.servers, []);
 });
 
 test(".env.example documents every connector variable without shipping credentials", async () => {
@@ -124,13 +132,14 @@ test(".env.example documents every connector variable without shipping credentia
     "GITLAB_ACCOUNT_ID",
     "GITLAB_API_TOKEN",
     "GIT_PUSH_ACCOUNT_ID",
-    "MYSQL_MCP_COMMAND",
-    "IDEA_MCP_COMMAND",
+    "MYSQL_MCP_AUTH",
+    "IDEA_MCP_TOKEN",
   ]) {
     assert.match(content, new RegExp(`^${name}=`, "mu"));
   }
   assert.match(content, /JIRA_API_TOKEN=""/u);
   assert.match(content, /GITLAB_API_TOKEN=""/u);
+  assert.doesNotMatch(content, /(?:MYSQL|IDEA)_MCP_COMMAND/u);
   assert.doesNotMatch(content, /(?:ghp_|glpat-|sk-[A-Za-z0-9])/u);
 });
 
