@@ -3,6 +3,7 @@ import {
   mkdir,
   readFile,
   readdir,
+  rename,
   rm,
   writeFile,
 } from "node:fs/promises";
@@ -14,6 +15,17 @@ import { parse, stringify } from "yaml";
 import { SaberError } from "./errors.js";
 import { resolveExistingPathWithinRoot, resolveWithinRoot } from "./files.js";
 import { isSafeExternalAssetSource } from "./validation.js";
+import {
+  isActiveWorkflowState,
+  isWorkflowResult,
+  isWorkflowState,
+  roleForState,
+  suggestedCommand,
+  transition,
+  type ActiveWorkflowState,
+  type WorkflowResult,
+  type WorkflowState,
+} from "./workflow-loop.js";
 
 export const workitemRoles = ["ba", "dev", "qa"] as const;
 export type WorkitemRole = (typeof workitemRoles)[number];
@@ -32,8 +44,27 @@ export type WorkitemRepositoryEvidence = WorkitemRepositoryReference & {
   ci: string | null;
 };
 
+export type WorkflowHistoryEntry = {
+  from: WorkflowState;
+  to: WorkflowState;
+  result: WorkflowResult | "resume";
+  role: WorkitemRole;
+  recordedAt: string;
+  summary: string;
+};
+
+export type WorkitemWorkflow = {
+  state: WorkflowState;
+  role: WorkitemRole | null;
+  iteration: number;
+  pausedFrom: ActiveWorkflowState | null;
+  pauseReason: string | null;
+  updatedAt: string;
+  history: WorkflowHistoryEntry[];
+};
+
 export type WorkitemMetadata = {
-  schemaVersion: 1;
+  schemaVersion: 1 | 2;
   key: string;
   jira: {
     url: string;
@@ -42,6 +73,7 @@ export type WorkitemMetadata = {
     updatedAt?: string;
   };
   repositories: WorkitemRepositoryReference[];
+  workflow: WorkitemWorkflow;
 };
 
 export type WorkitemCreateInput = {
@@ -94,6 +126,40 @@ export type WorkitemStatusReport = {
   artifacts: WorkitemArtifactState[];
   repositories: WorkitemRepositoryEvidence[];
   handoffCount: number;
+  workflow: WorkitemWorkflow;
+  suggestion: string | null;
+};
+
+export type AdvanceWorkitemInput = {
+  key: string;
+  result: WorkflowResult | string;
+  summary: string;
+  risk: string;
+  next: string;
+  fingerprint?: string;
+  now?: Date;
+};
+
+export type PauseWorkitemInput = {
+  key: string;
+  reason: string;
+  now?: Date;
+};
+
+export type ResumeWorkitemInput = {
+  key: string;
+  fingerprint?: string;
+  now?: Date;
+};
+
+export type WorkitemTransitionRecord = {
+  key: string;
+  from: WorkflowState;
+  to: WorkflowState;
+  result: WorkflowResult | "resume";
+  role: WorkitemRole;
+  iteration: number;
+  handoff?: string;
 };
 
 const requiredArtifactPaths = [
@@ -554,8 +620,9 @@ function metadataFor(
   updatedAt: string | undefined,
   repositories: WorkitemRepositoryReference[],
 ): WorkitemMetadata {
+  const now = new Date().toISOString();
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     key,
     jira: {
       url: jiraUrl,
@@ -563,6 +630,15 @@ function metadataFor(
       ...(updatedAt === undefined ? {} : { updatedAt }),
     },
     repositories,
+    workflow: {
+      state: "ba-clarify",
+      role: "ba",
+      iteration: 0,
+      pausedFrom: null,
+      pauseReason: null,
+      updatedAt: now,
+      history: [],
+    },
   };
 }
 
@@ -651,11 +727,83 @@ export async function createWorkitem(
   }
 }
 
+function initialWorkflow(): WorkitemWorkflow {
+  return {
+    state: "ba-clarify",
+    role: "ba",
+    iteration: 0,
+    pausedFrom: null,
+    pauseReason: null,
+    updatedAt: new Date(0).toISOString(),
+    history: [],
+  };
+}
+
+function normalizeHistoryEntry(value: unknown): WorkflowHistoryEntry | undefined {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ["from", "to", "result", "role", "recordedAt", "summary"]) ||
+    !isWorkflowState(value.from) ||
+    !isWorkflowState(value.to) ||
+    (value.result !== "resume" && !isWorkflowResult(value.result)) ||
+    typeof value.role !== "string" ||
+    typeof value.recordedAt !== "string" ||
+    typeof value.summary !== "string"
+  ) return undefined;
+  try {
+    return {
+      from: value.from,
+      to: value.to,
+      result: value.result,
+      role: validateRole(value.role),
+      recordedAt: validateUpdatedAt(value.recordedAt)!,
+      summary: validateShortText("workflow history summary", value.summary),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function normalizeWorkflow(value: unknown): WorkitemWorkflow | undefined {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ["state", "role", "iteration", "pausedFrom", "pauseReason", "updatedAt", "history"]) ||
+    !isWorkflowState(value.state) ||
+    (!Number.isSafeInteger(value.iteration) || (value.iteration as number) < 0) ||
+    typeof value.updatedAt !== "string" ||
+    !Array.isArray(value.history)
+  ) return undefined;
+  const expectedRole = value.state === "paused"
+    ? (isActiveWorkflowState(value.pausedFrom) ? roleForState(value.pausedFrom) : null)
+    : roleForState(value.state);
+  if (value.role !== expectedRole) return undefined;
+  if (
+    (value.state === "paused" && !isActiveWorkflowState(value.pausedFrom)) ||
+    (value.state !== "paused" && value.pausedFrom !== null) ||
+    (value.pauseReason !== null && typeof value.pauseReason !== "string")
+  ) return undefined;
+  const history = value.history.map(normalizeHistoryEntry);
+  if (history.some((entry) => entry === undefined)) return undefined;
+  try {
+    return {
+      state: value.state,
+      role: expectedRole,
+      iteration: value.iteration as number,
+      pausedFrom: value.state === "paused" ? value.pausedFrom as ActiveWorkflowState : null,
+      pauseReason: value.pauseReason === null ? null : validateShortText("workflow pause reason", value.pauseReason),
+      updatedAt: validateUpdatedAt(value.updatedAt)!,
+      history: history as WorkflowHistoryEntry[],
+    };
+  } catch {
+    return undefined;
+  }
+}
+
 function normalizeMetadata(value: unknown): WorkitemMetadata | undefined {
   if (
     !isRecord(value) ||
-    !hasOnlyKeys(value, ["schemaVersion", "key", "jira", "repositories"]) ||
-    value.schemaVersion !== 1 ||
+    !hasOnlyKeys(value, ["schemaVersion", "key", "jira", "repositories", "workflow"]) ||
+    (value.schemaVersion !== 1 && value.schemaVersion !== 2) ||
     typeof value.key !== "string" ||
     !isRecord(value.jira) ||
     !hasOnlyKeys(value.jira, ["url", "fingerprint", "updatedAt"]) ||
@@ -677,8 +825,10 @@ function normalizeMetadata(value: unknown): WorkitemMetadata | undefined {
       fingerprint,
       repositories: value.repositories as WorkitemRepositoryReference[],
     });
+    const workflow = value.schemaVersion === 1 ? initialWorkflow() : normalizeWorkflow(value.workflow);
+    if (workflow === undefined) return undefined;
     return {
-      schemaVersion: 1,
+      schemaVersion: value.schemaVersion,
       key,
       jira: {
         url: jiraUrl,
@@ -686,6 +836,7 @@ function normalizeMetadata(value: unknown): WorkitemMetadata | undefined {
         ...(updatedAt === undefined ? {} : { updatedAt }),
       },
       repositories,
+      workflow,
     };
   } catch {
     return undefined;
@@ -866,6 +1017,207 @@ export async function appendWorkitemHandoff(
   throw new SaberError(`could not append handoff for workitem ${key}; retry later`, 1);
 }
 
+function transitionDate(value: Date | undefined): string {
+  const date = value ?? new Date();
+  if (Number.isNaN(date.getTime())) {
+    throw new SaberError("invalid workflow transition timestamp", 2);
+  }
+  return date.toISOString();
+}
+
+async function requireGateArtifacts(
+  repositoryRoot: string,
+  metadata: WorkitemMetadata,
+  paths: readonly string[],
+): Promise<void> {
+  for (const path of paths) {
+    const artifact = await artifactState(repositoryRoot, metadata.key, path);
+    if (artifact.state !== "present") {
+      throw new SaberError(`workflow is paused: required artifact ${path} is ${artifact.state}`, 3);
+    }
+  }
+  if (paths.includes("repositories.yaml")) {
+    const evidence = await readWorkitemRepositoryEvidence(repositoryRoot, metadata.key, metadata);
+    if (evidence.artifact.state !== "present") {
+      throw new SaberError("workflow is paused: repository evidence is invalid", 3);
+    }
+  }
+}
+
+async function assertFingerprint(
+  metadata: WorkitemMetadata,
+  fingerprint: string | undefined,
+): Promise<void> {
+  if (fingerprint !== undefined && metadata.jira.fingerprint !== validateFingerprint(fingerprint)) {
+    throw new SaberError("workflow is paused because its Jira source fingerprint changed", 3);
+  }
+}
+
+async function requireTransitionGate(
+  repositoryRoot: string,
+  metadata: WorkitemMetadata,
+  to: WorkflowState,
+  fingerprint: string | undefined,
+): Promise<void> {
+  if (metadata.workflow.state === "ba-clarify") {
+    await requireGateArtifacts(repositoryRoot, metadata, ["requirements.md"]);
+    await assertFingerprint(metadata, fingerprint);
+  } else if (metadata.workflow.state === "dev-build" || metadata.workflow.state === "dev-fix") {
+    await requireGateArtifacts(repositoryRoot, metadata, ["design.md", "plan.md", "repositories.yaml"]);
+  } else if (metadata.workflow.state === "qa-verify" && to === "ba-accept") {
+    await requireGateArtifacts(repositoryRoot, metadata, ["tests.md"]);
+  } else if (metadata.workflow.state === "ba-accept" && to === "done") {
+    await assertFingerprint(metadata, fingerprint);
+  }
+}
+
+async function persistWorkflowTransition(
+  repositoryRoot: string,
+  metadata: WorkitemMetadata,
+  workflow: WorkitemWorkflow,
+  handoff: { role: WorkitemRole; summary: string; risk: string; next: string } | undefined,
+): Promise<string | undefined> {
+  const metadataPath = await resolveWorkitemPath(repositoryRoot, metadata.key, "workitem.yaml");
+  const workitemPath = await resolveWorkitemPath(repositoryRoot, metadata.key);
+  const token = workflow.updatedAt.replaceAll(":", "-");
+  const stagedMetadata = join(workitemPath, `.workitem-${token}.tmp`);
+  await assertNoSymbolicLinkComponents(repositoryRoot, workitemRelativePath(metadata.key, `.workitem-${token}.tmp`));
+  const nextMetadata: WorkitemMetadata = { ...metadata, schemaVersion: 2, workflow };
+  let handoffPath: string | undefined;
+  try {
+    await writeFile(stagedMetadata, stringify(nextMetadata), { encoding: "utf8", flag: "wx" });
+    if (handoff !== undefined) {
+      const filename = handoffFilename(workflow.updatedAt, handoff.role);
+      const destination = await resolveWorkitemPath(repositoryRoot, metadata.key, `handoffs/${filename}`);
+      await writeFile(
+        destination,
+        renderHandoff(metadata.key, workflow.updatedAt, handoff.role, handoff.summary, handoff.risk, handoff.next),
+        { encoding: "utf8", flag: "wx" },
+      );
+      handoffPath = `handoffs/${filename}`;
+    }
+    await rename(stagedMetadata, metadataPath);
+    return handoffPath;
+  } catch (error: unknown) {
+    await rm(stagedMetadata, { force: true });
+    if (handoffPath !== undefined) {
+      await rm(await resolveWorkitemPath(repositoryRoot, metadata.key, handoffPath), { force: true });
+    }
+    if (error instanceof SaberError) throw error;
+    throw new SaberError(`could not update workflow for workitem ${metadata.key}`, 1);
+  }
+}
+
+/** Advance one role-owned stage and append its compact handoff as one logical transaction. */
+export async function advanceWorkitem(
+  repositoryRoot: string,
+  input: AdvanceWorkitemInput,
+): Promise<WorkitemTransitionRecord> {
+  const metadata = await readWorkitemMetadata(repositoryRoot, input.key);
+  const from = metadata.workflow.state;
+  if (!isActiveWorkflowState(from)) {
+    throw new SaberError(`workflow state ${from} cannot advance`, 2);
+  }
+  if (!isWorkflowResult(input.result)) {
+    throw new SaberError("invalid workflow result", 2);
+  }
+  const summary = validateShortText("workflow summary", input.summary);
+  const risk = validateShortText("workflow risk", input.risk);
+  const next = validateShortText("workflow next action", input.next);
+  const role = roleForState(from)!;
+  const to = transition(from, input.result);
+  await requireTransitionGate(repositoryRoot, metadata, to, input.fingerprint);
+  const recordedAt = transitionDate(input.now);
+  const iteration = metadata.workflow.iteration + (
+    (from === "qa-verify" && input.result === "fail") ||
+    (from === "ba-accept" && input.result === "reject") ? 1 : 0
+  );
+  const workflow: WorkitemWorkflow = {
+    state: to,
+    role: to === "paused" ? role : roleForState(to),
+    iteration,
+    pausedFrom: to === "paused" ? from : null,
+    pauseReason: to === "paused" ? risk : null,
+    updatedAt: recordedAt,
+    history: [
+      ...metadata.workflow.history,
+      { from, to, result: input.result, role, recordedAt, summary },
+    ],
+  };
+  const handoff = await persistWorkflowTransition(repositoryRoot, metadata, workflow, {
+    role,
+    summary,
+    risk,
+    next,
+  });
+  return { key: metadata.key, from, to, result: input.result, role, iteration, handoff };
+}
+
+export async function pauseWorkitem(
+  repositoryRoot: string,
+  input: PauseWorkitemInput,
+): Promise<WorkitemTransitionRecord> {
+  const metadata = await readWorkitemMetadata(repositoryRoot, input.key);
+  const from = metadata.workflow.state;
+  if (!isActiveWorkflowState(from)) {
+    throw new SaberError(`workflow state ${from} cannot be paused`, 2);
+  }
+  const reason = validateShortText("workflow pause reason", input.reason);
+  const role = roleForState(from)!;
+  const recordedAt = transitionDate(input.now);
+  const workflow: WorkitemWorkflow = {
+    state: "paused",
+    role,
+    iteration: metadata.workflow.iteration,
+    pausedFrom: from,
+    pauseReason: reason,
+    updatedAt: recordedAt,
+    history: [...metadata.workflow.history, {
+      from,
+      to: "paused",
+      result: "paused",
+      role,
+      recordedAt,
+      summary: reason,
+    }],
+  };
+  await persistWorkflowTransition(repositoryRoot, metadata, workflow, undefined);
+  return { key: metadata.key, from, to: "paused", result: "paused", role, iteration: workflow.iteration };
+}
+
+export async function resumeWorkitem(
+  repositoryRoot: string,
+  input: ResumeWorkitemInput,
+): Promise<WorkitemTransitionRecord> {
+  const metadata = await readWorkitemMetadata(repositoryRoot, input.key);
+  if (metadata.workflow.state !== "paused" || metadata.workflow.pausedFrom === null) {
+    throw new SaberError(`workflow state ${metadata.workflow.state} cannot resume`, 2);
+  }
+  await assertFingerprint(metadata, input.fingerprint);
+  const to = metadata.workflow.pausedFrom;
+  const role = roleForState(to)!;
+  const recordedAt = transitionDate(input.now);
+  const summary = "Workflow resumed by a human.";
+  const workflow: WorkitemWorkflow = {
+    state: to,
+    role,
+    iteration: metadata.workflow.iteration,
+    pausedFrom: null,
+    pauseReason: null,
+    updatedAt: recordedAt,
+    history: [...metadata.workflow.history, {
+      from: "paused",
+      to,
+      result: "resume",
+      role,
+      recordedAt,
+      summary,
+    }],
+  };
+  await persistWorkflowTransition(repositoryRoot, metadata, workflow, undefined);
+  return { key: metadata.key, from: "paused", to, result: "resume", role, iteration: workflow.iteration };
+}
+
 export async function compareWorkitemFingerprint(
   repositoryRoot: string,
   rawKey: string,
@@ -932,5 +1284,7 @@ export async function getWorkitemStatus(
     ),
     repositories: repositoryEvidence.repositories,
     handoffCount: await countHandoffs(repositoryRoot, metadata.key),
+    workflow: metadata.workflow,
+    suggestion: suggestedCommand(metadata.key, metadata.workflow.state),
   };
 }

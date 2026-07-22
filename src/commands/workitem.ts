@@ -259,6 +259,11 @@ function formatStatus(report: WorkitemStatusReport): string {
     `- Jira: ${report.jiraUrl}`,
     `- Fingerprint: ${report.fingerprint}`,
     `- Jira updated at: ${report.updatedAt ?? "unknown"}`,
+    `- Workflow: ${report.workflow.state}`,
+    `- Responsible role: ${report.workflow.role ?? "none"}`,
+    `- Loop iteration: ${report.workflow.iteration}`,
+    ...(report.workflow.pauseReason === null ? [] : [`- Pause reason: ${report.workflow.pauseReason}`]),
+    ...(report.suggestion === null ? [] : [`- Suggested: ${report.suggestion}`]),
     "Artifacts:",
     ...report.artifacts.map(
       (artifact) =>

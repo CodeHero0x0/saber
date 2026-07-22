@@ -17,12 +17,18 @@ import { parse } from "yaml";
 
 import { runCli } from "../src/cli.js";
 import {
+  advanceWorkitem,
   appendWorkitemHandoff,
   createWorkitem,
+  getWorkitemStatus,
+  pauseWorkitem,
+  readWorkitemMetadata,
+  resumeWorkitem,
   type WorkitemRepositoryReference,
 } from "../src/lib/workitems.js";
 import { SaberError } from "../src/lib/errors.js";
 import type { RepositoryConfig } from "../src/lib/models.js";
+import { transition } from "../src/lib/workflow-loop.js";
 
 const jiraUrl = "https://jira.example.test/browse/PROJ-123";
 const fingerprint = "sha256:0123456789abcdef";
@@ -103,12 +109,23 @@ test("workitem create writes the complete cross-repository evidence pack", async
       await access(join(workitemRoot, file));
     }
 
-    assert.deepEqual(parse(await readFile(join(workitemRoot, "workitem.yaml"), "utf8")), {
-      schemaVersion: 1,
-      key: "PROJ-123",
-      jira: { url: jiraUrl, fingerprint },
-      repositories,
-    });
+    const metadata = parse(await readFile(join(workitemRoot, "workitem.yaml"), "utf8")) as {
+      schemaVersion: number;
+      workflow: { state: string; role: string; iteration: number; history: unknown[]; updatedAt: string };
+    };
+    assert.equal(metadata.schemaVersion, 2);
+    assert.deepEqual(
+      { ...metadata.workflow, updatedAt: "<timestamp>" },
+      {
+        state: "ba-clarify",
+        role: "ba",
+        iteration: 0,
+        pausedFrom: null,
+        pauseReason: null,
+        updatedAt: "<timestamp>",
+        history: [],
+      },
+    );
     const repositoryEvidence = await readFile(join(workitemRoot, "repositories.yaml"), "utf8");
     assert.match(repositoryEvidence, /frontend/u);
     assert.match(repositoryEvidence, /backend/u);
@@ -209,7 +226,9 @@ test("workitem status reports required artifacts and repository references only"
     const result = await runCli(["workitem", "status", "PROJ-123", "--json"], { cwd: root });
 
     assert.equal(result.exitCode, 0);
-    assert.deepEqual(JSON.parse(result.stdout), {
+    const report = JSON.parse(result.stdout) as Record<string, unknown>;
+    const workflow = report.workflow as Record<string, unknown>;
+    assert.deepEqual({ ...report, workflow: undefined, suggestion: undefined }, {
       key: "PROJ-123",
       jiraUrl,
       fingerprint,
@@ -226,7 +245,19 @@ test("workitem status reports required artifacts and repository references only"
       ],
       repositories: initialRepositoryEvidence,
       handoffCount: 0,
+      workflow: undefined,
+      suggestion: undefined,
     });
+    assert.deepEqual({ ...workflow, updatedAt: "<timestamp>" }, {
+      state: "ba-clarify",
+      role: "ba",
+      iteration: 0,
+      pausedFrom: null,
+      pauseReason: null,
+      updatedAt: "<timestamp>",
+      history: [],
+    });
+    assert.equal(report.suggestion, "saber next PROJ-123 --result ready");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -593,5 +624,169 @@ test("workitem creation rejects an escaping workitems symlink", async () => {
   } finally {
     await rm(root, { recursive: true, force: true });
     await rm(outside, { recursive: true, force: true });
+  }
+});
+
+const transitionText = {
+  summary: "Stage evidence is ready.",
+  risk: "No unresolved blocker.",
+  next: "The next role reviews the evidence.",
+};
+
+async function advance(
+  root: string,
+  result: string,
+  minute: number,
+  includeFingerprint = false,
+): Promise<void> {
+  await advanceWorkitem(root, {
+    key: "PROJ-123",
+    result,
+    ...transitionText,
+    ...(includeFingerprint ? { fingerprint } : {}),
+    now: new Date(`2026-07-22T10:${String(minute).padStart(2, "0")}:00.000Z`),
+  });
+}
+
+test("workflow transition table rejects every unsupported role result", () => {
+  assert.equal(transition("ba-clarify", "ready"), "dev-build");
+  assert.equal(transition("qa-verify", "fail"), "dev-fix");
+  assert.equal(transition("ba-accept", "accept"), "done");
+  assert.throws(
+    () => transition("ba-clarify", "pass"),
+    (error: unknown) => error instanceof SaberError && error.exitCode === 2,
+  );
+  assert.throws(
+    () => transition("done", "ready"),
+    (error: unknown) => error instanceof SaberError && error.exitCode === 2,
+  );
+});
+
+test("workitem loop completes the direct BA Dev QA BA path", async () => {
+  const root = await temporaryRoot();
+  try {
+    await createWorkitem(root, { key: "PROJ-123", jiraUrl, fingerprint, repositories });
+    await advance(root, "ready", 1, true);
+    await advance(root, "ready", 2);
+    await advance(root, "pass", 3);
+    await advance(root, "accept", 4, true);
+
+    const status = await getWorkitemStatus(root, "PROJ-123");
+    assert.equal(status.workflow.state, "done");
+    assert.equal(status.workflow.role, null);
+    assert.equal(status.workflow.iteration, 0);
+    assert.equal(status.workflow.history.length, 4);
+    assert.equal(status.handoffCount, 4);
+    assert.equal(status.suggestion, null);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("workitem loop returns QA failures and BA rejections through Dev fix", async () => {
+  const root = await temporaryRoot();
+  try {
+    await createWorkitem(root, { key: "PROJ-123", jiraUrl, fingerprint, repositories });
+    await advance(root, "ready", 1, true);
+    await advance(root, "ready", 2);
+    await advance(root, "fail", 3);
+    await advance(root, "ready", 4);
+    await advance(root, "pass", 5);
+    await advance(root, "reject", 6);
+    await advance(root, "ready", 7);
+    await advance(root, "pass", 8);
+    await advance(root, "accept", 9, true);
+
+    const metadata = await readWorkitemMetadata(root, "PROJ-123");
+    assert.equal(metadata.workflow.state, "done");
+    assert.equal(metadata.workflow.iteration, 2);
+    assert.deepEqual(
+      metadata.workflow.history.map(({ from, to, result }) => ({ from, to, result })),
+      [
+        { from: "ba-clarify", to: "dev-build", result: "ready" },
+        { from: "dev-build", to: "qa-verify", result: "ready" },
+        { from: "qa-verify", to: "dev-fix", result: "fail" },
+        { from: "dev-fix", to: "qa-verify", result: "ready" },
+        { from: "qa-verify", to: "ba-accept", result: "pass" },
+        { from: "ba-accept", to: "dev-fix", result: "reject" },
+        { from: "dev-fix", to: "qa-verify", result: "ready" },
+        { from: "qa-verify", to: "ba-accept", result: "pass" },
+        { from: "ba-accept", to: "done", result: "accept" },
+      ],
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("workitem loop pauses, detects drift, and resumes its owning role", async () => {
+  const root = await temporaryRoot();
+  try {
+    await createWorkitem(root, { key: "PROJ-123", jiraUrl, fingerprint, repositories });
+    const paused = await pauseWorkitem(root, {
+      key: "PROJ-123",
+      reason: "Waiting for a business decision.",
+      now: new Date("2026-07-22T10:01:00.000Z"),
+    });
+    assert.equal(paused.to, "paused");
+    await assert.rejects(
+      () => resumeWorkitem(root, { key: "PROJ-123", fingerprint: "sha256:changed" }),
+      (error: unknown) => error instanceof SaberError && error.exitCode === 3,
+    );
+    const stillPaused = await readWorkitemMetadata(root, "PROJ-123");
+    assert.equal(stillPaused.workflow.state, "paused");
+
+    await resumeWorkitem(root, {
+      key: "PROJ-123",
+      fingerprint,
+      now: new Date("2026-07-22T10:02:00.000Z"),
+    });
+    const resumed = await readWorkitemMetadata(root, "PROJ-123");
+    assert.equal(resumed.workflow.state, "ba-clarify");
+    assert.equal(resumed.workflow.role, "ba");
+    assert.equal(resumed.workflow.pauseReason, null);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("schema v1 workitems read as BA clarify and upgrade on first transition", async () => {
+  const root = await temporaryRoot();
+  try {
+    await createWorkitem(root, { key: "PROJ-123", jiraUrl, fingerprint, repositories });
+    const metadataPath = join(root, "workitems", "PROJ-123", "workitem.yaml");
+    const metadata = parse(await readFile(metadataPath, "utf8")) as Record<string, unknown>;
+    delete metadata.workflow;
+    metadata.schemaVersion = 1;
+    await writeFile(metadataPath, `${JSON.stringify(metadata)}\n`, "utf8");
+
+    assert.equal((await readWorkitemMetadata(root, "PROJ-123")).workflow.state, "ba-clarify");
+    await advance(root, "ready", 1, true);
+    assert.equal((parse(await readFile(metadataPath, "utf8")) as { schemaVersion: number }).schemaVersion, 2);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("workflow gates leave metadata and handoffs unchanged when evidence is missing", async () => {
+  const root = await temporaryRoot();
+  try {
+    await createWorkitem(root, { key: "PROJ-123", jiraUrl, fingerprint, repositories });
+    await advance(root, "ready", 1, true);
+    await unlink(join(root, "workitems", "PROJ-123", "design.md"));
+    const metadataPath = join(root, "workitems", "PROJ-123", "workitem.yaml");
+    const handoffsPath = join(root, "workitems", "PROJ-123", "handoffs");
+    const beforeMetadata = await readFile(metadataPath, "utf8");
+    const beforeHandoffs = await readdir(handoffsPath);
+
+    await assert.rejects(
+      () => advance(root, "ready", 2),
+      (error: unknown) =>
+        error instanceof SaberError && error.exitCode === 3 && /design\.md/u.test(error.message),
+    );
+    assert.equal(await readFile(metadataPath, "utf8"), beforeMetadata);
+    assert.deepEqual(await readdir(handoffsPath), beforeHandoffs);
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 });
