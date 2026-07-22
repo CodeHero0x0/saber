@@ -32,8 +32,8 @@ State `ba-clarify` accepts `ready` to enter `dev-build`, or `blocked` to pause. 
 
 ```bash
 saber open <JIRA-KEY>
-saber next <JIRA-KEY> --result ready
-saber next <JIRA-KEY> --result accept
+saber next <JIRA-KEY> --result ready --fingerprint <hash>
+saber next <JIRA-KEY> --result accept --fingerprint <hash>
 saber next <JIRA-KEY> --result reject
 ```
 

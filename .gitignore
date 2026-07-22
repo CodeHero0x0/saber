@@ -8,6 +8,7 @@
 /.agents/skills/saber--*/
 /.claude/skills/saber--*/
 /.opencode/skills/saber--*/
+/workitems/**/.workflow-transaction/
 /.idea/
 /.worktrees/
 node_modules/

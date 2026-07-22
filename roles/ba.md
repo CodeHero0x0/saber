@@ -33,8 +33,8 @@ kind: human-role
 saber use ba --tool codex                 # 也可使用 claude 或 opencode
 saber open <JIRA-KEY>
 saber loop <JIRA-KEY>
-saber next <JIRA-KEY> --result ready       # ba-clarify -> dev-build
-saber next <JIRA-KEY> --result accept      # ba-accept -> done
+saber next <JIRA-KEY> --result ready --fingerprint <hash>   # ba-clarify -> dev-build
+saber next <JIRA-KEY> --result accept --fingerprint <hash>  # ba-accept -> done
 saber next <JIRA-KEY> --result reject      # ba-accept -> dev-fix
 saber pause <JIRA-KEY> --reason <text>
 saber resume <JIRA-KEY>

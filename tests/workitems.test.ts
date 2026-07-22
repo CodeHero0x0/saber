@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
 import {
   access,
+  copyFile as nodeCopyFile,
+  mkdir,
   mkdtemp,
   readFile,
   readdir,
+  rename as nodeRename,
   rm,
   symlink,
   unlink,
@@ -257,7 +260,7 @@ test("workitem status reports required artifacts and repository references only"
       updatedAt: "<timestamp>",
       history: [],
     });
-    assert.equal(report.suggestion, "saber next PROJ-123 --result ready");
+    assert.equal(report.suggestion, "saber next PROJ-123 --result ready --fingerprint <current-fingerprint>");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -786,6 +789,125 @@ test("workflow gates leave metadata and handoffs unchanged when evidence is miss
     );
     assert.equal(await readFile(metadataPath, "utf8"), beforeMetadata);
     assert.deepEqual(await readdir(handoffsPath), beforeHandoffs);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("BA gates require a current Jira fingerprint before starting or accepting", async () => {
+  const root = await temporaryRoot();
+  try {
+    await createWorkitem(root, { key: "PROJ-123", jiraUrl, fingerprint, repositories });
+    const metadataPath = join(root, "workitems", "PROJ-123", "workitem.yaml");
+    const handoffsPath = join(root, "workitems", "PROJ-123", "handoffs");
+    const initialMetadata = await readFile(metadataPath, "utf8");
+
+    await assert.rejects(
+      () => advanceWorkitem(root, { key: "PROJ-123", result: "ready", ...transitionText }),
+      (error: unknown) =>
+        error instanceof SaberError && error.exitCode === 3 && /fingerprint is required/u.test(error.message),
+    );
+    assert.equal(await readFile(metadataPath, "utf8"), initialMetadata);
+    assert.equal((await readdir(handoffsPath)).length, 1);
+
+    await advance(root, "ready", 1, true);
+    await advance(root, "ready", 2);
+    await advance(root, "pass", 3);
+    const beforeAccept = await readFile(metadataPath, "utf8");
+    const beforeHandoffs = await readdir(handoffsPath);
+    await assert.rejects(
+      () => advanceWorkitem(root, { key: "PROJ-123", result: "accept", ...transitionText }),
+      (error: unknown) =>
+        error instanceof SaberError && error.exitCode === 3 && /fingerprint is required/u.test(error.message),
+    );
+    assert.equal(await readFile(metadataPath, "utf8"), beforeAccept);
+    assert.deepEqual(await readdir(handoffsPath), beforeHandoffs);
+    assert.equal((await readWorkitemMetadata(root, "PROJ-123")).workflow.state, "ba-accept");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("workflow persistence rolls back metadata and handoff publication failures", async () => {
+  for (const failure of ["metadata", "handoff"] as const) {
+    const root = await temporaryRoot();
+    try {
+      await createWorkitem(root, { key: "PROJ-123", jiraUrl, fingerprint, repositories });
+      const metadataPath = join(root, "workitems", "PROJ-123", "workitem.yaml");
+      const handoffsPath = join(root, "workitems", "PROJ-123", "handoffs");
+      const beforeMetadata = await readFile(metadataPath, "utf8");
+      const beforeHandoffs = await readdir(handoffsPath);
+
+      await assert.rejects(
+        () => advanceWorkitem(
+          root,
+          {
+            key: "PROJ-123",
+            result: "ready",
+            fingerprint,
+            ...transitionText,
+            now: new Date("2026-07-22T10:01:00.000Z"),
+          },
+          failure === "metadata"
+            ? {
+                rename: async (source, destination) => {
+                  if (source.endsWith("/next-workitem.yaml")) throw new Error("injected metadata failure");
+                  await nodeRename(source, destination);
+                },
+              }
+            : {
+                copyFile: async (source, destination, mode) => {
+                  if (source.endsWith("/next-handoff.md")) throw new Error("injected handoff failure");
+                  await nodeCopyFile(source, destination, mode);
+                },
+              },
+        ),
+        (error: unknown) => error instanceof SaberError && error.exitCode === 1,
+      );
+
+      assert.equal(await readFile(metadataPath, "utf8"), beforeMetadata, `${failure} changed metadata`);
+      assert.deepEqual(await readdir(handoffsPath), beforeHandoffs, `${failure} published a handoff`);
+      await assert.rejects(
+        access(join(root, "workitems", "PROJ-123", ".workflow-transaction")),
+        { code: "ENOENT" },
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test("an orphaned workflow transaction rolls back before the next read", async () => {
+  const root = await temporaryRoot();
+  try {
+    await createWorkitem(root, { key: "PROJ-123", jiraUrl, fingerprint, repositories });
+    const workitemRoot = join(root, "workitems", "PROJ-123");
+    const metadataPath = join(workitemRoot, "workitem.yaml");
+    const transactionRoot = join(workitemRoot, ".workflow-transaction");
+    const handoffPath = "handoffs/2026-07-22T10-01-00.000Z-ba.md";
+    const original = await readFile(metadataPath, "utf8");
+
+    await mkdir(transactionRoot);
+    await writeFile(
+      join(transactionRoot, "manifest.json"),
+      `${JSON.stringify({
+        schemaVersion: 1,
+        key: "PROJ-123",
+        ownerPid: 2_147_483_647,
+        phase: "metadata-promoted",
+        handoffPath,
+      })}\n`,
+      "utf8",
+    );
+    await writeFile(join(transactionRoot, "previous-workitem.yaml"), original, "utf8");
+    await writeFile(metadataPath, "invalid promoted metadata\n", "utf8");
+    await writeFile(join(workitemRoot, handoffPath), "partial handoff\n", "utf8");
+
+    const recovered = await readWorkitemMetadata(root, "PROJ-123");
+    assert.equal(recovered.workflow.state, "ba-clarify");
+    assert.equal(await readFile(metadataPath, "utf8"), original);
+    await assert.rejects(access(transactionRoot), { code: "ENOENT" });
+    await assert.rejects(access(join(workitemRoot, handoffPath)), { code: "ENOENT" });
   } finally {
     await rm(root, { recursive: true, force: true });
   }

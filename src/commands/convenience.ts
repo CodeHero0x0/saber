@@ -97,8 +97,8 @@ const toolLabels: Record<ToolName, string> = {
 function commonCommands(role: RoleName): string[] {
   if (role === "ba") return [
     "saber open <JIRA-KEY>",
-    "saber next <JIRA-KEY> --result ready",
-    "saber next <JIRA-KEY> --result accept",
+    "saber next <JIRA-KEY> --result ready --fingerprint <hash>",
+    "saber next <JIRA-KEY> --result accept --fingerprint <hash>",
     "saber next <JIRA-KEY> --result reject",
     "saber pause <JIRA-KEY> --reason <text>",
   ];

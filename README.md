@@ -54,10 +54,10 @@ npm run saber -- open PROJ-123
 npm run saber -- loop PROJ-123
 
 # 完成当前阶段；合法结果取决于当前状态
-npm run saber -- next PROJ-123 --result ready
+npm run saber -- next PROJ-123 --result ready --fingerprint sha256:...
 npm run saber -- next PROJ-123 --result pass
 npm run saber -- next PROJ-123 --result fail
-npm run saber -- next PROJ-123 --result accept
+npm run saber -- next PROJ-123 --result accept --fingerprint sha256:...
 
 # 暂停和恢复
 npm run saber -- pause PROJ-123 --reason "等待业务确认"

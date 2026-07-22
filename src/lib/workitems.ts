@@ -1,4 +1,5 @@
 import {
+  copyFile,
   lstat,
   mkdir,
   readFile,
@@ -7,6 +8,7 @@ import {
   rm,
   writeFile,
 } from "node:fs/promises";
+import { COPYFILE_EXCL } from "node:constants";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -162,6 +164,33 @@ export type WorkitemTransitionRecord = {
   handoff?: string;
 };
 
+export type WorkitemPersistenceDependencies = {
+  copyFile?: typeof copyFile;
+  lstat?: typeof lstat;
+  mkdir?: typeof mkdir;
+  readFile?: typeof readFile;
+  rename?: typeof rename;
+  rm?: typeof rm;
+  writeFile?: typeof writeFile;
+};
+
+type WorkflowPersistenceFileSystem = Required<WorkitemPersistenceDependencies>;
+
+type WorkflowTransactionPhase =
+  | "preparing"
+  | "prepared"
+  | "metadata-promoted"
+  | "handoff-promoted"
+  | "committed";
+
+type WorkflowTransactionManifest = {
+  schemaVersion: 1;
+  key: string;
+  ownerPid: number;
+  phase: WorkflowTransactionPhase;
+  handoffPath: string | null;
+};
+
 const requiredArtifactPaths = [
   "workitem.yaml",
   "requirements.md",
@@ -185,6 +214,22 @@ const templatePaths = [
 ] as const;
 
 const templateDirectory = fileURLToPath(new URL("../../templates/workitem/", import.meta.url));
+const workflowTransactionDirectory = ".workflow-transaction";
+const workflowTransactionManifest = "manifest.json";
+
+function persistenceFileSystem(
+  dependencies: WorkitemPersistenceDependencies = {},
+): WorkflowPersistenceFileSystem {
+  return {
+    copyFile: dependencies.copyFile ?? copyFile,
+    lstat: dependencies.lstat ?? lstat,
+    mkdir: dependencies.mkdir ?? mkdir,
+    readFile: dependencies.readFile ?? readFile,
+    rename: dependencies.rename ?? rename,
+    rm: dependencies.rm ?? rm,
+    writeFile: dependencies.writeFile ?? writeFile,
+  };
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -590,6 +635,170 @@ async function resolveWorkitemPath(
   return resolveWorkitemWithinRoot(repositoryRoot, relativePath);
 }
 
+function transactionRelativePath(key: string, child?: string): string {
+  const root = workitemRelativePath(key, workflowTransactionDirectory);
+  return child === undefined ? root : `${root}/${child}`;
+}
+
+async function transactionPath(
+  repositoryRoot: string,
+  key: string,
+  child?: string,
+): Promise<string> {
+  return resolveWorkitemPath(
+    repositoryRoot,
+    key,
+    child === undefined ? workflowTransactionDirectory : `${workflowTransactionDirectory}/${child}`,
+  );
+}
+
+async function lstatIfPresent(
+  path: string,
+  fileSystem: WorkflowPersistenceFileSystem,
+): Promise<Awaited<ReturnType<typeof lstat>> | undefined> {
+  try {
+    return await fileSystem.lstat(path);
+  } catch (error: unknown) {
+    if (isMissingPath(error)) return undefined;
+    throw error;
+  }
+}
+
+function normalizeWorkflowTransactionManifest(
+  value: unknown,
+  key: string,
+): WorkflowTransactionManifest | undefined {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ["schemaVersion", "key", "ownerPid", "phase", "handoffPath"]) ||
+    value.schemaVersion !== 1 ||
+    value.key !== key ||
+    !Number.isSafeInteger(value.ownerPid) ||
+    (value.ownerPid as number) <= 0 ||
+    !["preparing", "prepared", "metadata-promoted", "handoff-promoted", "committed"].includes(
+      value.phase as string,
+    ) ||
+    (value.handoffPath !== null &&
+      (typeof value.handoffPath !== "string" ||
+        !/^handoffs\/\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}\.\d{3}Z-(ba|dev|qa)(-\d+)?\.md$/u.test(value.handoffPath)))
+  ) return undefined;
+  return value as WorkflowTransactionManifest;
+}
+
+async function readWorkflowTransactionManifest(
+  repositoryRoot: string,
+  key: string,
+  fileSystem: WorkflowPersistenceFileSystem,
+): Promise<WorkflowTransactionManifest | undefined> {
+  const path = await transactionPath(repositoryRoot, key, workflowTransactionManifest);
+  try {
+    const parsed = JSON.parse(await fileSystem.readFile(path, "utf8")) as unknown;
+    const manifest = normalizeWorkflowTransactionManifest(parsed, key);
+    if (manifest === undefined) {
+      throw new SaberError(`workitem ${key} has an invalid workflow transaction`, 1);
+    }
+    return manifest;
+  } catch (error: unknown) {
+    if (error instanceof SaberError) throw error;
+    if (isMissingPath(error)) return undefined;
+    throw new SaberError(`workitem ${key} has an invalid workflow transaction`, 1);
+  }
+}
+
+async function writeWorkflowTransactionManifest(
+  repositoryRoot: string,
+  manifest: WorkflowTransactionManifest,
+  fileSystem: WorkflowPersistenceFileSystem,
+  initial = false,
+): Promise<void> {
+  const path = await transactionPath(repositoryRoot, manifest.key, workflowTransactionManifest);
+  const content = `${JSON.stringify(manifest)}\n`;
+  if (initial) {
+    await fileSystem.writeFile(path, content, { encoding: "utf8", flag: "wx" });
+    return;
+  }
+  const next = await transactionPath(repositoryRoot, manifest.key, "manifest.next.json");
+  await fileSystem.writeFile(next, content, { encoding: "utf8", flag: "wx" });
+  await fileSystem.rename(next, path);
+}
+
+function processIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error: unknown) {
+    return typeof error === "object" && error !== null && "code" in error && error.code === "EPERM";
+  }
+}
+
+function transactionMayHavePublishedHandoff(phase: WorkflowTransactionPhase): boolean {
+  return phase === "metadata-promoted" || phase === "handoff-promoted" || phase === "committed";
+}
+
+async function rollbackWorkflowTransaction(
+  repositoryRoot: string,
+  manifest: WorkflowTransactionManifest,
+  fileSystem: WorkflowPersistenceFileSystem,
+): Promise<void> {
+  const previous = await transactionPath(repositoryRoot, manifest.key, "previous-workitem.yaml");
+  const previousStatus = await lstatIfPresent(previous, fileSystem);
+  if (previousStatus !== undefined) {
+    if (!previousStatus.isFile() || previousStatus.isSymbolicLink()) {
+      throw new SaberError(`workitem ${manifest.key} workflow rollback is unavailable`, 1);
+    }
+    const restore = await transactionPath(repositoryRoot, manifest.key, "restore-workitem.yaml");
+    await fileSystem.rm(restore, { force: true });
+    await fileSystem.copyFile(previous, restore, COPYFILE_EXCL);
+    await fileSystem.rename(
+      restore,
+      await resolveWorkitemPath(repositoryRoot, manifest.key, "workitem.yaml"),
+    );
+  }
+  if (
+    manifest.handoffPath !== null &&
+    transactionMayHavePublishedHandoff(manifest.phase)
+  ) {
+    await fileSystem.rm(
+      await resolveWorkitemPath(repositoryRoot, manifest.key, manifest.handoffPath),
+      { force: true },
+    );
+  }
+  await fileSystem.rm(await transactionPath(repositoryRoot, manifest.key), {
+    recursive: true,
+    force: true,
+  });
+}
+
+async function recoverWorkflowTransaction(
+  repositoryRoot: string,
+  key: string,
+  dependencies: WorkitemPersistenceDependencies = {},
+): Promise<void> {
+  const fileSystem = persistenceFileSystem(dependencies);
+  const root = await transactionPath(repositoryRoot, key);
+  const status = await lstatIfPresent(root, fileSystem);
+  if (status === undefined) return;
+  if (!status.isDirectory() || status.isSymbolicLink()) {
+    throw new SaberError(`workitem ${key} has an invalid workflow transaction`, 1);
+  }
+  const manifest = await readWorkflowTransactionManifest(repositoryRoot, key, fileSystem);
+  if (manifest === undefined) {
+    if (Date.now() - Number(status.mtimeMs) > 30_000) {
+      await fileSystem.rm(root, { recursive: true, force: true });
+      return;
+    }
+    throw new SaberError(`workitem ${key} workflow update is preparing`, 3);
+  }
+  if (manifest.phase === "committed") {
+    await fileSystem.rm(root, { recursive: true, force: true });
+    return;
+  }
+  if (processIsAlive(manifest.ownerPid)) {
+    throw new SaberError(`workitem ${key} workflow update is in progress`, 3);
+  }
+  await rollbackWorkflowTransaction(repositoryRoot, manifest, fileSystem);
+}
+
 function renderTemplate(template: string, values: Readonly<Record<string, string>>): string {
   return template.replace(/\{\{([A-Z_]+)\}\}/gu, (whole, name: string) => values[name] ?? whole);
 }
@@ -916,6 +1125,7 @@ export async function readWorkitemMetadata(
   rawKey: string,
 ): Promise<WorkitemMetadata> {
   const key = validateWorkitemKey(rawKey);
+  await recoverWorkflowTransaction(repositoryRoot, key);
   const relativePath = workitemRelativePath(key, "workitem.yaml");
   await assertNoSymbolicLinkComponents(repositoryRoot, relativePath);
   try {
@@ -1047,7 +1257,11 @@ async function requireGateArtifacts(
 async function assertFingerprint(
   metadata: WorkitemMetadata,
   fingerprint: string | undefined,
+  required = false,
 ): Promise<void> {
+  if (required && fingerprint === undefined) {
+    throw new SaberError("workflow is paused: current Jira fingerprint is required", 3);
+  }
   if (fingerprint !== undefined && metadata.jira.fingerprint !== validateFingerprint(fingerprint)) {
     throw new SaberError("workflow is paused because its Jira source fingerprint changed", 3);
   }
@@ -1061,13 +1275,13 @@ async function requireTransitionGate(
 ): Promise<void> {
   if (metadata.workflow.state === "ba-clarify") {
     await requireGateArtifacts(repositoryRoot, metadata, ["requirements.md"]);
-    await assertFingerprint(metadata, fingerprint);
+    await assertFingerprint(metadata, fingerprint, true);
   } else if (metadata.workflow.state === "dev-build" || metadata.workflow.state === "dev-fix") {
     await requireGateArtifacts(repositoryRoot, metadata, ["design.md", "plan.md", "repositories.yaml"]);
   } else if (metadata.workflow.state === "qa-verify" && to === "ba-accept") {
     await requireGateArtifacts(repositoryRoot, metadata, ["tests.md"]);
   } else if (metadata.workflow.state === "ba-accept" && to === "done") {
-    await assertFingerprint(metadata, fingerprint);
+    await assertFingerprint(metadata, fingerprint, true);
   }
 }
 
@@ -1076,32 +1290,81 @@ async function persistWorkflowTransition(
   metadata: WorkitemMetadata,
   workflow: WorkitemWorkflow,
   handoff: { role: WorkitemRole; summary: string; risk: string; next: string } | undefined,
+  dependencies: WorkitemPersistenceDependencies = {},
 ): Promise<string | undefined> {
+  const fileSystem = persistenceFileSystem(dependencies);
   const metadataPath = await resolveWorkitemPath(repositoryRoot, metadata.key, "workitem.yaml");
-  const workitemPath = await resolveWorkitemPath(repositoryRoot, metadata.key);
-  const token = workflow.updatedAt.replaceAll(":", "-");
-  const stagedMetadata = join(workitemPath, `.workitem-${token}.tmp`);
-  await assertNoSymbolicLinkComponents(repositoryRoot, workitemRelativePath(metadata.key, `.workitem-${token}.tmp`));
+  const transactionRoot = await transactionPath(repositoryRoot, metadata.key);
+  const stagedMetadata = await transactionPath(repositoryRoot, metadata.key, "next-workitem.yaml");
+  const previousMetadata = await transactionPath(repositoryRoot, metadata.key, "previous-workitem.yaml");
+  const stagedHandoff = await transactionPath(repositoryRoot, metadata.key, "next-handoff.md");
   const nextMetadata: WorkitemMetadata = { ...metadata, schemaVersion: 2, workflow };
-  let handoffPath: string | undefined;
+  const handoffPath = handoff === undefined
+    ? null
+    : `handoffs/${handoffFilename(workflow.updatedAt, handoff.role)}`;
+  const manifest: WorkflowTransactionManifest = {
+    schemaVersion: 1,
+    key: metadata.key,
+    ownerPid: process.pid,
+    phase: "preparing",
+    handoffPath,
+  };
+  let transactionCreated = false;
   try {
-    await writeFile(stagedMetadata, stringify(nextMetadata), { encoding: "utf8", flag: "wx" });
+    try {
+      await fileSystem.mkdir(transactionRoot);
+    } catch (error: unknown) {
+      if (!(typeof error === "object" && error !== null && "code" in error && error.code === "EEXIST")) {
+        throw error;
+      }
+      await recoverWorkflowTransaction(repositoryRoot, metadata.key, dependencies);
+      await fileSystem.mkdir(transactionRoot);
+    }
+    transactionCreated = true;
+    await writeWorkflowTransactionManifest(repositoryRoot, manifest, fileSystem, true);
+    await fileSystem.copyFile(metadataPath, previousMetadata, COPYFILE_EXCL);
+    await fileSystem.writeFile(stagedMetadata, stringify(nextMetadata), {
+      encoding: "utf8",
+      flag: "wx",
+    });
     if (handoff !== undefined) {
-      const filename = handoffFilename(workflow.updatedAt, handoff.role);
-      const destination = await resolveWorkitemPath(repositoryRoot, metadata.key, `handoffs/${filename}`);
-      await writeFile(
-        destination,
+      const destination = await resolveWorkitemPath(repositoryRoot, metadata.key, handoffPath!);
+      if ((await lstatIfPresent(destination, fileSystem)) !== undefined) {
+        throw new SaberError(`workitem ${metadata.key} handoff already exists`, 2);
+      }
+      await fileSystem.writeFile(
+        stagedHandoff,
         renderHandoff(metadata.key, workflow.updatedAt, handoff.role, handoff.summary, handoff.risk, handoff.next),
         { encoding: "utf8", flag: "wx" },
       );
-      handoffPath = `handoffs/${filename}`;
     }
-    await rename(stagedMetadata, metadataPath);
-    return handoffPath;
+    manifest.phase = "prepared";
+    await writeWorkflowTransactionManifest(repositoryRoot, manifest, fileSystem);
+
+    await fileSystem.rename(stagedMetadata, metadataPath);
+    manifest.phase = "metadata-promoted";
+    await writeWorkflowTransactionManifest(repositoryRoot, manifest, fileSystem);
+
+    if (handoffPath !== null) {
+      await fileSystem.copyFile(
+        stagedHandoff,
+        await resolveWorkitemPath(repositoryRoot, metadata.key, handoffPath),
+        COPYFILE_EXCL,
+      );
+      manifest.phase = "handoff-promoted";
+      await writeWorkflowTransactionManifest(repositoryRoot, manifest, fileSystem);
+    }
+    manifest.phase = "committed";
+    await writeWorkflowTransactionManifest(repositoryRoot, manifest, fileSystem);
+    await fileSystem.rm(transactionRoot, { recursive: true, force: true });
+    return handoffPath ?? undefined;
   } catch (error: unknown) {
-    await rm(stagedMetadata, { force: true });
-    if (handoffPath !== undefined) {
-      await rm(await resolveWorkitemPath(repositoryRoot, metadata.key, handoffPath), { force: true });
+    if (transactionCreated) {
+      try {
+        await rollbackWorkflowTransaction(repositoryRoot, manifest, fileSystem);
+      } catch {
+        throw new SaberError(`could not rollback workflow for workitem ${metadata.key}`, 1);
+      }
     }
     if (error instanceof SaberError) throw error;
     throw new SaberError(`could not update workflow for workitem ${metadata.key}`, 1);
@@ -1112,6 +1375,7 @@ async function persistWorkflowTransition(
 export async function advanceWorkitem(
   repositoryRoot: string,
   input: AdvanceWorkitemInput,
+  dependencies: WorkitemPersistenceDependencies = {},
 ): Promise<WorkitemTransitionRecord> {
   const metadata = await readWorkitemMetadata(repositoryRoot, input.key);
   const from = metadata.workflow.state;
@@ -1149,13 +1413,14 @@ export async function advanceWorkitem(
     summary,
     risk,
     next,
-  });
+  }, dependencies);
   return { key: metadata.key, from, to, result: input.result, role, iteration, handoff };
 }
 
 export async function pauseWorkitem(
   repositoryRoot: string,
   input: PauseWorkitemInput,
+  dependencies: WorkitemPersistenceDependencies = {},
 ): Promise<WorkitemTransitionRecord> {
   const metadata = await readWorkitemMetadata(repositoryRoot, input.key);
   const from = metadata.workflow.state;
@@ -1181,13 +1446,14 @@ export async function pauseWorkitem(
       summary: reason,
     }],
   };
-  await persistWorkflowTransition(repositoryRoot, metadata, workflow, undefined);
+  await persistWorkflowTransition(repositoryRoot, metadata, workflow, undefined, dependencies);
   return { key: metadata.key, from, to: "paused", result: "paused", role, iteration: workflow.iteration };
 }
 
 export async function resumeWorkitem(
   repositoryRoot: string,
   input: ResumeWorkitemInput,
+  dependencies: WorkitemPersistenceDependencies = {},
 ): Promise<WorkitemTransitionRecord> {
   const metadata = await readWorkitemMetadata(repositoryRoot, input.key);
   if (metadata.workflow.state !== "paused" || metadata.workflow.pausedFrom === null) {
@@ -1214,7 +1480,7 @@ export async function resumeWorkitem(
       summary,
     }],
   };
-  await persistWorkflowTransition(repositoryRoot, metadata, workflow, undefined);
+  await persistWorkflowTransition(repositoryRoot, metadata, workflow, undefined, dependencies);
   return { key: metadata.key, from: "paused", to, result: "resume", role, iteration: workflow.iteration };
 }
 

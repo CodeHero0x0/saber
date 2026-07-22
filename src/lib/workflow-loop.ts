@@ -77,11 +77,11 @@ export function suggestedCommand(key: string, state: WorkflowState): string | nu
   if (state === "done") return null;
   if (state === "paused") return `saber resume ${key}`;
   const results: Record<ActiveWorkflowState, string> = {
-    "ba-clarify": "ready",
+    "ba-clarify": "ready --fingerprint <current-fingerprint>",
     "dev-build": "ready",
-    "qa-verify": "pass|fail",
+    "qa-verify": "pass",
     "dev-fix": "ready",
-    "ba-accept": "accept|reject",
+    "ba-accept": "accept --fingerprint <current-fingerprint>",
   };
   return `saber next ${key} --result ${results[state]}`;
 }
