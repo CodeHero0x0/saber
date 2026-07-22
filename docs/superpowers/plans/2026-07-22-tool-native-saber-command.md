@@ -4,7 +4,7 @@
 
 **Goal:** 让团队成员在 Codex、Claude Code、OpenCode 中通过 `/saber` 和自然语言启动、推进工作，同时支持非 Jira 需求来源、自动工作项编号和按角色推荐的 Saber 资产。
 
-**Architecture:** 工作项层新增通用 `source` 模型与内容快照，保留旧 Jira 输入和 schema v1/v2 读取兼容；工具层把六个核心命令实现为普通团队技能包，由 `materialize` 对所有角色始终投影。默认角色只提供路由上下文，实际阶段由用户意图和工作项状态决定；个人技能及低风险 MCP 能力继续通过受限本地配置合并。
+**Architecture:** 工作项层只保留通用 `source` 模型与内容快照，原有模板、demo 和测试一次性迁移，不保留旧 Jira schema 读取分支；工具层把六个核心命令实现为普通团队技能包，由 `materialize` 对所有角色始终投影。默认角色只提供路由上下文，实际阶段由用户意图和工作项状态决定；个人技能及低风险 MCP 能力继续通过受限本地配置合并。
 
 **Tech Stack:** TypeScript、Node.js 20、YAML、Node test runner、Markdown/SKILL.md。
 
@@ -23,7 +23,7 @@
 
 - [ ] **Step 1: 增加来源与自动编号测试**
 
-增加测试，覆盖 `chat|jira|document|manual` 来源、由 Markdown 内容计算 SHA-256、`SABER-YYYYMMDD-NNN` 同日递增、冲突不覆盖、禁止 `--source-text`、以及旧 `jira` 元数据读取后首次流转升级为通用 `source`。
+增加测试，覆盖 `chat|jira|document|manual` 来源、由 Markdown 内容计算 SHA-256、`SABER-YYYYMMDD-NNN` 同日递增、冲突不覆盖、禁止 `--source-text`，以及明确拒绝包含旧 `jira` 字段的元数据。
 
 - [ ] **Step 2: 运行工作项测试确认新场景尚未实现**
 
@@ -48,7 +48,7 @@ export type WorkitemSource = {
 };
 ```
 
-新建工作项统一写 schema v3 和 `source`。兼容输入仍允许 `jiraUrl`/`fingerprint`；新输入接受来源标题、内容和引用，计算 `sha256:<hex>` 并写入 `intake.md`。旧 schema v1/v2 在内存中映射为 `source.kind: jira`，首次状态写入时升级。
+所有工作项统一写 schema v3 和 `source`。创建接口只接受来源标题、来源文件和引用，计算 `sha256:<hex>` 并写入 `intake.md`；删除 `jiraUrl`/`jira` 运行时字段和 schema v1/v2 分支。Jira 通过 `source.kind: jira`、`origin` 和同一套指纹字段表达。
 
 - [ ] **Step 4: 实现内部 CLI 的文件型来源参数**
 
@@ -65,7 +65,7 @@ saber workitem create --source-type chat --source-title "标题" \
 
 Run: `npx tsx --test tests/workitems.test.ts`
 
-Expected: 通用来源、旧版兼容和现有状态机测试全部通过。
+Expected: 通用来源、旧 schema 拒绝和现有状态机测试全部通过。
 
 ### Task 2: `/saber` 超级命令与辅助技能
 
