@@ -1,5 +1,6 @@
 import {
   copyFile,
+  link,
   lstat,
   mkdir,
   readFile,
@@ -166,6 +167,7 @@ export type WorkitemTransitionRecord = {
 
 export type WorkitemPersistenceDependencies = {
   copyFile?: typeof copyFile;
+  link?: typeof link;
   lstat?: typeof lstat;
   mkdir?: typeof mkdir;
   readFile?: typeof readFile;
@@ -180,6 +182,7 @@ type WorkflowTransactionPhase =
   | "preparing"
   | "prepared"
   | "metadata-promoted"
+  | "publishing-handoff"
   | "handoff-promoted"
   | "committed";
 
@@ -222,6 +225,7 @@ function persistenceFileSystem(
 ): WorkflowPersistenceFileSystem {
   return {
     copyFile: dependencies.copyFile ?? copyFile,
+    link: dependencies.link ?? link,
     lstat: dependencies.lstat ?? lstat,
     mkdir: dependencies.mkdir ?? mkdir,
     readFile: dependencies.readFile ?? readFile,
@@ -675,7 +679,7 @@ function normalizeWorkflowTransactionManifest(
     value.key !== key ||
     !Number.isSafeInteger(value.ownerPid) ||
     (value.ownerPid as number) <= 0 ||
-    !["preparing", "prepared", "metadata-promoted", "handoff-promoted", "committed"].includes(
+    !["preparing", "prepared", "metadata-promoted", "publishing-handoff", "handoff-promoted", "committed"].includes(
       value.phase as string,
     ) ||
     (value.handoffPath !== null &&
@@ -731,8 +735,34 @@ function processIsAlive(pid: number): boolean {
   }
 }
 
-function transactionMayHavePublishedHandoff(phase: WorkflowTransactionPhase): boolean {
-  return phase === "metadata-promoted" || phase === "handoff-promoted" || phase === "committed";
+function transactionMayHavePromotedMetadata(phase: WorkflowTransactionPhase): boolean {
+  return phase !== "preparing";
+}
+
+async function removeOwnedHandoff(
+  repositoryRoot: string,
+  manifest: WorkflowTransactionManifest,
+  fileSystem: WorkflowPersistenceFileSystem,
+): Promise<void> {
+  if (manifest.handoffPath === null) return;
+  const staged = await transactionPath(repositoryRoot, manifest.key, "next-handoff.md");
+  const destination = await resolveWorkitemPath(repositoryRoot, manifest.key, manifest.handoffPath);
+  const [stagedStatus, destinationStatus] = await Promise.all([
+    lstatIfPresent(staged, fileSystem),
+    lstatIfPresent(destination, fileSystem),
+  ]);
+  if (
+    stagedStatus !== undefined &&
+    destinationStatus !== undefined &&
+    stagedStatus.isFile() &&
+    destinationStatus.isFile() &&
+    !stagedStatus.isSymbolicLink() &&
+    !destinationStatus.isSymbolicLink() &&
+    stagedStatus.dev === destinationStatus.dev &&
+    stagedStatus.ino === destinationStatus.ino
+  ) {
+    await fileSystem.rm(destination, { force: true });
+  }
 }
 
 async function rollbackWorkflowTransaction(
@@ -742,7 +772,7 @@ async function rollbackWorkflowTransaction(
 ): Promise<void> {
   const previous = await transactionPath(repositoryRoot, manifest.key, "previous-workitem.yaml");
   const previousStatus = await lstatIfPresent(previous, fileSystem);
-  if (previousStatus !== undefined) {
+  if (previousStatus !== undefined && transactionMayHavePromotedMetadata(manifest.phase)) {
     if (!previousStatus.isFile() || previousStatus.isSymbolicLink()) {
       throw new SaberError(`workitem ${manifest.key} workflow rollback is unavailable`, 1);
     }
@@ -754,15 +784,7 @@ async function rollbackWorkflowTransaction(
       await resolveWorkitemPath(repositoryRoot, manifest.key, "workitem.yaml"),
     );
   }
-  if (
-    manifest.handoffPath !== null &&
-    transactionMayHavePublishedHandoff(manifest.phase)
-  ) {
-    await fileSystem.rm(
-      await resolveWorkitemPath(repositoryRoot, manifest.key, manifest.handoffPath),
-      { force: true },
-    );
-  }
+  await removeOwnedHandoff(repositoryRoot, manifest, fileSystem);
   await fileSystem.rm(await transactionPath(repositoryRoot, manifest.key), {
     recursive: true,
     force: true,
@@ -1346,10 +1368,11 @@ async function persistWorkflowTransition(
     await writeWorkflowTransactionManifest(repositoryRoot, manifest, fileSystem);
 
     if (handoffPath !== null) {
-      await fileSystem.copyFile(
+      manifest.phase = "publishing-handoff";
+      await writeWorkflowTransactionManifest(repositoryRoot, manifest, fileSystem);
+      await fileSystem.link(
         stagedHandoff,
         await resolveWorkitemPath(repositoryRoot, metadata.key, handoffPath),
-        COPYFILE_EXCL,
       );
       manifest.phase = "handoff-promoted";
       await writeWorkflowTransactionManifest(repositoryRoot, manifest, fileSystem);

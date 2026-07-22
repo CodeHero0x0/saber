@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import {
   access,
   copyFile as nodeCopyFile,
+  link as nodeLink,
   mkdir,
   mkdtemp,
   readFile,
@@ -856,9 +857,9 @@ test("workflow persistence rolls back metadata and handoff publication failures"
                 },
               }
             : {
-                copyFile: async (source, destination, mode) => {
+                link: async (source, destination) => {
                   if (source.endsWith("/next-handoff.md")) throw new Error("injected handoff failure");
-                  await nodeCopyFile(source, destination, mode);
+                  await nodeLink(source, destination);
                 },
               },
         ),
@@ -901,7 +902,9 @@ test("an orphaned workflow transaction rolls back before the next read", async (
     );
     await writeFile(join(transactionRoot, "previous-workitem.yaml"), original, "utf8");
     await writeFile(metadataPath, "invalid promoted metadata\n", "utf8");
-    await writeFile(join(workitemRoot, handoffPath), "partial handoff\n", "utf8");
+    const stagedHandoff = join(transactionRoot, "next-handoff.md");
+    await writeFile(stagedHandoff, "partial handoff\n", "utf8");
+    await nodeLink(stagedHandoff, join(workitemRoot, handoffPath));
 
     const recovered = await readWorkitemMetadata(root, "PROJ-123");
     assert.equal(recovered.workflow.state, "ba-clarify");
