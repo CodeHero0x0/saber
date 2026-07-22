@@ -128,7 +128,7 @@ test(".env.example documents every connector variable without shipping credentia
 
 test("role, workflow, and skill assets retain their minimum usable contracts", async () => {
   const roleFiles = ["ba.md", "dev.md", "qa.md"];
-  const roleSections = ["Responsible human", "Required input", "Output", "Handoff"];
+  const roleSections = ["Responsible human", "Required input", "Output", "Handoff", "Commands"];
 
   for (const filename of roleFiles) {
     const content = await readFile(join(repositoryRoot, "roles", filename), "utf8");
@@ -148,6 +148,8 @@ test("role, workflow, and skill assets retain their minimum usable contracts", a
     for (const section of workflowSections) {
       assert.match(content, new RegExp(`## ${section}`, "u"), `${workflow} lacks ${section}`);
     }
+    assert.match(content, /saber open <JIRA-KEY>/u, `${workflow} lacks a daily open command`);
+    assert.match(content, /saber next <JIRA-KEY> --result/u, `${workflow} lacks a transition command`);
   }
 
   const skillExpectations = [

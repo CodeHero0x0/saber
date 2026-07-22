@@ -24,3 +24,18 @@ kind: human-role
 ## Handoff
 
 向 QA 交接可部署的变更范围、测试命令、已知风险、证据链接与下一步。任何创建 MR、push 或 Jira 更新都先展示 L2 预览并等待真人确认。
+
+## Commands
+
+以下命令在 Codex、Claude Code、OpenCode 中一致：
+
+```bash
+saber use dev --tool codex [--project <name>]  # 也可使用 claude 或 opencode
+saber open <JIRA-KEY>
+saber loop <JIRA-KEY>
+saber next <JIRA-KEY> --result ready       # dev-build/dev-fix -> qa-verify
+saber next <JIRA-KEY> --result blocked
+saber pause <JIRA-KEY> --reason <text>
+saber resume <JIRA-KEY>
+saber action preview <capability> --payload <json-file>
+```

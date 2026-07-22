@@ -30,6 +30,16 @@ description: Use when confirmed requirements must be converted into a cross-repo
 
 Each target repository has a clear owner, branch, implementation evidence and verification plan; cross-repository assumptions are documented.
 
+States `dev-build` and `dev-fix` accept `ready` to enter `qa-verify`, or `blocked` to pause.
+
+```bash
+saber open <JIRA-KEY>
+saber next <JIRA-KEY> --result ready
+saber next <JIRA-KEY> --result blocked
+```
+
 ## Pause condition
 
 Pause when requirements drift, a required repository is missing/dirty in a way that obscures ownership, an interface is undecided, or an L2 confirmation is absent.
+
+Use `saber pause <JIRA-KEY> --reason <text>` and resume only after the responsible Dev resolves the condition.

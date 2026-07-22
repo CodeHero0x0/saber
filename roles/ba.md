@@ -24,3 +24,18 @@ kind: human-role
 ## Handoff
 
 向 Dev 交接需求摘要、可验证的验收标准、影响仓库候选与尚未解决的风险。若 Jira 内容或指纹变化，暂停交接并由 BA 重新确认。
+
+## Commands
+
+以下命令在 Codex、Claude Code、OpenCode 中一致：
+
+```bash
+saber use ba --tool codex                 # 也可使用 claude 或 opencode
+saber open <JIRA-KEY>
+saber loop <JIRA-KEY>
+saber next <JIRA-KEY> --result ready       # ba-clarify -> dev-build
+saber next <JIRA-KEY> --result accept      # ba-accept -> done
+saber next <JIRA-KEY> --result reject      # ba-accept -> dev-fix
+saber pause <JIRA-KEY> --reason <text>
+saber resume <JIRA-KEY>
+```

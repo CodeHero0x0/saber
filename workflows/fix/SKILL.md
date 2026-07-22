@@ -29,6 +29,16 @@ description: Use when a verified defect or failed quality gate must be reproduce
 
 The reported defect has reproducible before/after evidence, and QA receives enough context to re-verify without reading chat history.
 
+State `dev-fix` accepts `ready` to return to `qa-verify`, or `blocked` to pause. A new QA `fail` or BA `reject` starts another fix iteration without losing previous evidence.
+
+```bash
+saber open <JIRA-KEY>
+saber next <JIRA-KEY> --result ready
+saber next <JIRA-KEY> --result blocked
+```
+
 ## Pause condition
 
 Pause when reproduction fails, the defect requires a product decision, a cross-repository contract is unclear, or an external write needs L2 confirmation.
+
+Use `saber pause <JIRA-KEY> --reason <text>` and resume only after the responsible Dev resolves the condition.

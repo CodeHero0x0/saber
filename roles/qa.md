@@ -24,3 +24,18 @@ kind: human-role
 ## Handoff
 
 向 Dev 交接可复现的缺陷、影响、证据和下一步；向 BA 交接验收结论。若测试环境、需求指纹或关键证据不可用，暂停并如实说明缺口。
+
+## Commands
+
+以下命令在 Codex、Claude Code、OpenCode 中一致：
+
+```bash
+saber use qa --tool codex [--project <name>]   # 也可使用 claude 或 opencode
+saber open <JIRA-KEY>
+saber loop <JIRA-KEY>
+saber next <JIRA-KEY> --result pass        # qa-verify -> ba-accept
+saber next <JIRA-KEY> --result fail        # qa-verify -> dev-fix
+saber next <JIRA-KEY> --result blocked
+saber pause <JIRA-KEY> --reason <text>
+saber resume <JIRA-KEY>
+```

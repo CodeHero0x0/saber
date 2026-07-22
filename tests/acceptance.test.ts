@@ -167,6 +167,15 @@ test("approved Saber MVP path works in a fresh temporary workspace", async () =>
     const external = await runCli(["external", "update", "--json"], { cwd: root });
     assert.equal(external.exitCode, 0, external.stdout);
     assert.equal((JSON.parse(external.stdout) as { mode: string }).mode, "dry-run");
+
+    const demo = await runCli(["demo", "--json"], { cwd: root });
+    assert.equal(demo.exitCode, 0, demo.stderr);
+    const opened = await runCli(["open", "DEMO-101", "--json"], { cwd: root });
+    assert.equal(opened.exitCode, 0, opened.stdout);
+    assert.equal((JSON.parse(opened.stdout) as { workflow: { state: string } }).workflow.state, "ba-clarify");
+    const loop = await runCli(["loop", "DEMO-101"], { cwd: root });
+    assert.equal(loop.exitCode, 0, loop.stderr);
+    assert.match(loop.stdout, /Current: \* ba-clarify/u);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

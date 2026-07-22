@@ -97,17 +97,22 @@ const toolLabels: Record<ToolName, string> = {
 function commonCommands(role: RoleName): string[] {
   if (role === "ba") return [
     "saber open <JIRA-KEY>",
-    "saber next <JIRA-KEY> --result ready|accept|reject",
+    "saber next <JIRA-KEY> --result ready",
+    "saber next <JIRA-KEY> --result accept",
+    "saber next <JIRA-KEY> --result reject",
     "saber pause <JIRA-KEY> --reason <text>",
   ];
   if (role === "qa") return [
     "saber open <JIRA-KEY>",
-    "saber next <JIRA-KEY> --result pass|fail|blocked",
+    "saber next <JIRA-KEY> --result pass",
+    "saber next <JIRA-KEY> --result fail",
+    "saber next <JIRA-KEY> --result blocked",
     "saber loop <JIRA-KEY>",
   ];
   return [
     "saber open <JIRA-KEY>",
-    "saber next <JIRA-KEY> --result ready|blocked",
+    "saber next <JIRA-KEY> --result ready",
+    "saber next <JIRA-KEY> --result blocked",
     "saber action preview <capability> --payload <json-file>",
   ];
 }

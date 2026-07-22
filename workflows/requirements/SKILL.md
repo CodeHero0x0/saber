@@ -28,6 +28,17 @@ description: Use when a Jira-backed request needs a confirmed scope and acceptan
 
 The BA explicitly confirms scope and observable acceptance criteria. Dev work cannot begin with hidden assumptions.
 
+State `ba-clarify` accepts `ready` to enter `dev-build`, or `blocked` to pause. State `ba-accept` accepts `accept` to finish or `reject` to enter `dev-fix`.
+
+```bash
+saber open <JIRA-KEY>
+saber next <JIRA-KEY> --result ready
+saber next <JIRA-KEY> --result accept
+saber next <JIRA-KEY> --result reject
+```
+
 ## Pause condition
 
 Pause for a human BA when the source is unavailable, its fingerprint drifts, acceptance criteria conflict, or a decision changes business scope.
+
+Use `saber pause <JIRA-KEY> --reason <text>` and resume only after the responsible BA resolves the condition.
