@@ -12,6 +12,8 @@ import type {
   ExternalAssetPackage,
   ProjectConfig,
   RepositoryConfig,
+  RoleName,
+  RoleProfile,
   RiskLevel,
   SaberConfig,
   ToolName,
@@ -284,6 +286,39 @@ function parseConnectors(value: unknown): ConnectorConfig[] {
   return value.map((connector, index) => parseConnector(connector, index));
 }
 
+function parseRoleName(value: unknown, location: string): RoleName {
+  if (value === "ba" || value === "dev" || value === "qa") {
+    return value;
+  }
+  throw new SaberError(`${location} must be ba, dev, or qa`);
+}
+
+function parseRoleProfile(value: unknown, index: number): RoleProfile {
+  const location = `saber.yaml.roleProfiles[${index}]`;
+  const record = requireRecord(value, location);
+  assertKnownKeys(record, location, [
+    "id",
+    "teamSkills",
+    "externalSkills",
+    "workflows",
+    "capabilities",
+  ]);
+  return {
+    id: parseRoleName(record.id, `${location}.id`),
+    teamSkills: requireStringArray(record.teamSkills, `${location}.teamSkills`),
+    externalSkills: requireStringArray(record.externalSkills, `${location}.externalSkills`),
+    workflows: requireStringArray(record.workflows, `${location}.workflows`),
+    capabilities: requireStringArray(record.capabilities, `${location}.capabilities`),
+  };
+}
+
+function parseRoleProfiles(value: unknown): RoleProfile[] {
+  if (!Array.isArray(value)) {
+    throw new SaberError("saber.yaml.roleProfiles must be a list");
+  }
+  return value.map((profile, index) => parseRoleProfile(profile, index));
+}
+
 function parseExternalAsset(value: unknown, index: number): ExternalAsset {
   const location = `saber.yaml.externalAssets.assets[${index}]`;
   const record = requireRecord(value, location);
@@ -381,6 +416,7 @@ export async function loadRepositoryConfig(repositoryRoot: string): Promise<Repo
     "capabilities",
     "connectors",
     "externalAssets",
+    "roleProfiles",
   ]);
   const schemaVersion = requireSchemaVersion(root);
 
@@ -390,5 +426,7 @@ export async function loadRepositoryConfig(repositoryRoot: string): Promise<Repo
     capabilities: parseCapabilities(root.capabilities),
     connectors: parseConnectors(root.connectors),
     externalAssets: parseExternalAssetsConfig(root.externalAssets, schemaVersion),
+    roleProfiles:
+      root.roleProfiles === undefined ? [] : parseRoleProfiles(root.roleProfiles),
   };
 }

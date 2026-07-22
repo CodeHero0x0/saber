@@ -27,6 +27,14 @@ import {
   runWorkitemCommand,
   type WorkitemCommandDependencies,
 } from "./commands/workitem.js";
+import {
+  runActionCommand,
+  type ActionCommandDependencies,
+} from "./commands/action.js";
+import {
+  runMaterializeCommand,
+  type MaterializeCommandDependencies,
+} from "./commands/materialize.js";
 import { SaberError } from "./lib/errors.js";
 
 export type CliResult = {
@@ -44,6 +52,9 @@ Commands:
   saber init [--apply --confirm] [--json]
   saber external list [--json]
   saber external update [id] [--apply --confirm] [--json]
+  saber action preview <capability> --payload <json-file> [--json]
+  saber action execute <capability> --payload <json-file> [--confirm <preview-token>] [--json]
+  saber materialize [--tool <codex|claude|opencode>] --role <ba|dev|qa> [--project <name>] [--capability <id>] [--json]
   saber workitem create <JIRA-KEY> --jira-url <url> --fingerprint <hash> [--updated-at <ISO timestamp>] --project <name> [--project <name>] [--json]
   saber workitem handoff <JIRA-KEY> --role <ba|dev|qa> --summary <text> --risk <text> --next <text> [--fingerprint <hash>] [--json]
   saber workitem drift <JIRA-KEY> --fingerprint <hash> [--json]
@@ -57,6 +68,8 @@ export type CliDependencies = {
   statusCommand?: StatusCommandDependencies;
   initCommand?: InitCommandDependencies;
   workitemCommand?: WorkitemCommandDependencies;
+  actionCommand?: ActionCommandDependencies;
+  materializeCommand?: MaterializeCommandDependencies;
 };
 
 export async function runCli(
@@ -111,6 +124,20 @@ export async function runCli(
     return runWorkitemCommand(argv.slice(1), {
       cwd,
       dependencies: dependencies?.workitemCommand,
+    });
+  }
+
+  if (command === "action") {
+    return runActionCommand(argv.slice(1), {
+      cwd,
+      dependencies: dependencies?.actionCommand,
+    });
+  }
+
+  if (command === "materialize") {
+    return runMaterializeCommand(argv.slice(1), {
+      cwd,
+      dependencies: dependencies?.materializeCommand,
     });
   }
 

@@ -118,7 +118,10 @@ async function temporaryRepository(prefix: string): Promise<string> {
 
 async function configWith(externalAssets: ExternalAssetsConfig) {
   const config = await loadRepositoryConfig(repositoryRoot);
-  return { ...config, externalAssets };
+  // External-command tests deliberately replace the catalog with minimal
+  // fixtures. Drop role profiles whose real-package references would no longer
+  // be valid so each test exercises only the external asset contract.
+  return { ...config, externalAssets, roleProfiles: [] };
 }
 
 async function writeCachedSkillPackage(

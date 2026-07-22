@@ -10,7 +10,7 @@ import {
   resolveExistingPathWithinRoot,
   resolveWithinRoot,
 } from "../lib/files.js";
-import type { RepositoryConfig } from "../lib/models.js";
+import type { RepositoryConfig, RoleProfile } from "../lib/models.js";
 import { validateRepositoryConfig } from "../lib/validation.js";
 
 export type ValidationReport = {
@@ -41,6 +41,7 @@ const requiredSkillPackages = [
 ] as const;
 const requiredWorkflowPackageNames: readonly string[] = requiredWorkflowPackages;
 const requiredSkillPackageNames: readonly string[] = requiredSkillPackages;
+const safeAssetId = /^[a-z][a-z0-9-]{0,63}$/u;
 
 function asJson(value: unknown): string {
   return `${JSON.stringify(value, null, 2)}\n`;
@@ -336,6 +337,27 @@ export async function validateRepositoryAssets(repositoryRoot: string): Promise<
   return errors;
 }
 
+/** Check role profile references before a member reaches materialize. */
+export async function validateRoleProfileAssetReferences(
+  repositoryRoot: string,
+  profiles: readonly RoleProfile[],
+): Promise<string[]> {
+  const errors: string[] = [];
+  for (const profile of profiles) {
+    for (const skill of profile.teamSkills) {
+      if (!safeAssetId.test(skill) || !(await isRegularFileWithinRoot(repositoryRoot, `skills/${skill}/SKILL.md`))) {
+        errors.push(`role ${profile.id} references missing team skill skills/${skill}/SKILL.md`);
+      }
+    }
+    for (const workflow of profile.workflows) {
+      if (!safeAssetId.test(workflow) || !(await isRegularFileWithinRoot(repositoryRoot, `workflows/${workflow}/SKILL.md`))) {
+        errors.push(`role ${profile.id} references missing workflow workflows/${workflow}/SKILL.md`);
+      }
+    }
+  }
+  return errors;
+}
+
 /** Validate configuration and all checked-in role/workflow/team-skill contracts. */
 export async function collectValidationReport(
   repositoryRoot: string,
@@ -343,11 +365,17 @@ export async function collectValidationReport(
 ): Promise<ValidationReport> {
   const errors: string[] = [];
   const loadConfig = dependencies.loadConfig ?? loadRepositoryConfig;
+  let loadedConfig: RepositoryConfig | undefined;
   try {
     const config = await loadConfig(repositoryRoot);
+    loadedConfig = config;
     errors.push(...validateRepositoryConfig(config));
   } catch (error: unknown) {
     errors.push(safeErrorMessage(error));
+  }
+
+  if (loadedConfig?.roleProfiles !== undefined) {
+    errors.push(...(await validateRoleProfileAssetReferences(repositoryRoot, loadedConfig.roleProfiles)));
   }
 
   const validateAssets = dependencies.validateAssets ?? validateRepositoryAssets;

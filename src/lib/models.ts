@@ -26,6 +26,17 @@ export type WorkspaceConfig = {
   projects: ProjectConfig[];
 };
 
+export type RoleName = "ba" | "dev" | "qa";
+
+/** A role chooses default context; it never grants external-write authority. */
+export type RoleProfile = {
+  id: RoleName;
+  teamSkills: string[];
+  externalSkills: string[];
+  workflows: string[];
+  capabilities: string[];
+};
+
 export type ConnectorKind = "http" | "mcp-command";
 
 export type ConnectorConfig = {
@@ -75,6 +86,8 @@ export type RepositoryConfig = {
   capabilities: Capability[];
   connectors: ConnectorConfig[];
   externalAssets: ExternalAssetsConfig;
+  /** Present in the repository configuration; optional here for backward-compatible test adapters. */
+  roleProfiles?: RoleProfile[];
 };
 
 export type RepositoryValidationInput = Pick<
@@ -82,4 +95,5 @@ export type RepositoryValidationInput = Pick<
   "workspace" | "capabilities" | "connectors"
 > & {
   externalAssets?: ExternalAssetsConfig;
+  roleProfiles?: RoleProfile[];
 };

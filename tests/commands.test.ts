@@ -94,6 +94,33 @@ test("asset validation catches a missing skill entrypoint and linked support art
   }
 });
 
+test("validate catches role profile references to missing checked-in assets", async () => {
+  const config = repositoryConfig();
+  config.roleProfiles = [
+    {
+      id: "dev",
+      teamSkills: ["missing-skill"],
+      externalSkills: [],
+      workflows: ["missing-workflow"],
+      capabilities: [],
+    },
+  ];
+
+  const result = await runCli(["validate", "--json"], {
+    cwd: process.cwd(),
+    dependencies: { validateCommand: { loadConfig: async () => config } },
+  });
+
+  assert.equal(result.exitCode, 2);
+  assert.deepEqual(JSON.parse(result.stdout), {
+    valid: false,
+    errors: [
+      "role dev references missing team skill skills/missing-skill/SKILL.md",
+      "role dev references missing workflow workflows/missing-workflow/SKILL.md",
+    ],
+  });
+});
+
 test("doctor distinguishes configured and missing connector variables without exposing values", async () => {
   const calls: SafeProcessCommand[] = [];
   const config = repositoryConfig();

@@ -1,6 +1,9 @@
 /.superpowers/
 /projects/
 /.saber/
+/.agents/skills/saber--*/
+/.claude/skills/saber--*/
+/.opencode/skills/saber--*/
 /.idea/
 /.worktrees/
 node_modules/

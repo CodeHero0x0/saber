@@ -41,6 +41,54 @@ workspace:
         - jira.read
         - gitlab.mr.read
         - mysql.read
+# 角色加载清单：角色只定义默认上下文与门禁，不授予外部写权限。
+roleProfiles:
+  # BA 负责澄清需求、记录证据并在 Jira 变化时暂停。
+  - id: ba
+    teamSkills:
+      - grill-me
+      - grill-with-docs
+      - openspec
+    externalSkills:
+      - openspec/openspec-explore
+      - openspec/openspec-propose
+    workflows:
+      - requirements
+    capabilities:
+      - jira.read
+      - gitlab.mr.read
+  # Dev 负责设计、实现、按仓验证与可审查交付。
+  - id: dev
+    teamSkills:
+      - superpowers
+      - grill-me
+      - openspec
+    externalSkills:
+      - superpowers/writing-plans
+      - superpowers/systematic-debugging
+      - superpowers/verification-before-completion
+      - openspec/openspec-apply-change
+    workflows:
+      - develop
+      - fix
+    capabilities:
+      - jira.read
+      - gitlab.mr.read
+  # QA 负责测试设计、失败定位与证据化交接。
+  - id: qa
+    teamSkills:
+      - superpowers
+      - grill-with-docs
+    externalSkills:
+      - superpowers/systematic-debugging
+      - superpowers/requesting-code-review
+      - superpowers/verification-before-completion
+    workflows:
+      - test
+      - fix
+    capabilities:
+      - jira.read
+      - gitlab.mr.read
 # 语义能力目录：risk 是风险等级，kind 是 read/action，connector 是提供该能力的连接器 ID。
 capabilities:
   # Jira 需求读取可自动执行。

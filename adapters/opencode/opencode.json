@@ -1,0 +1,7 @@
+{
+  "managedBy": "saber",
+  "version": 1,
+  "skillsDirectory": ".opencode/skills",
+  "runtime": ".saber/runtime/materialize/opencode",
+  "notes": "Run saber materialize --tool opencode --role <ba|dev|qa> before starting OpenCode."
+}

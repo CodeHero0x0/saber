@@ -20,6 +20,12 @@ const supportedGitProtocols = new Set(["https:", "ssh:"]);
 const scpStyleGitRemote = /^[A-Za-z0-9._-]+@[A-Za-z0-9._-]+:[A-Za-z0-9._/:-]+$/u;
 const sshUsername = /^[A-Za-z0-9._-]+$/u;
 const externalPackagePathSegment = /^[A-Za-z0-9][A-Za-z0-9._-]*$/u;
+const fixedRemoteWriteCapabilities = new Set([
+  "jira.update",
+  "gitlab.mr.create",
+  "mysql.write",
+  "idea.command.execute",
+]);
 // These characters can alter terminal rendering, conceal suffixes, or split a
 // displayed line. Reject them before a description is printed or a source is
 // parsed into Git argv.
@@ -206,6 +212,13 @@ function validateCapabilities(
       errors.push(`capability ${capability.id} uses forbidden risk level L3`);
     }
 
+    if (
+      fixedRemoteWriteCapabilities.has(capability.id) &&
+      (capability.risk !== "L2" || capability.kind !== "action")
+    ) {
+      errors.push(`capability ${capability.id} must use risk level L2 and kind action`);
+    }
+
     if (capability.connector !== undefined) {
       const connector = connectorsById.get(capability.connector);
 
@@ -343,6 +356,43 @@ function validateCapabilityReferences(input: RepositoryValidationInput, errors: 
   }
 }
 
+function validateRoleProfiles(input: RepositoryValidationInput, errors: string[]): void {
+  if (input.roleProfiles === undefined) {
+    return;
+  }
+  const capabilityIds = new Set(input.capabilities.map((capability) => capability.id));
+  const selectedExternalSkills = new Set(
+    (input.externalAssets?.assets ?? []).flatMap((asset) =>
+      asset.packages.map((selectedPackage) => `${asset.id}/${selectedPackage.id}`),
+    ),
+  );
+  for (const duplicate of findDuplicateValues(input.roleProfiles.map((profile) => profile.id))) {
+    errors.push(`duplicate role profile ${duplicate}`);
+  }
+  for (const profile of input.roleProfiles) {
+    for (const collection of [
+      ["team skill", profile.teamSkills],
+      ["workflow", profile.workflows],
+      ["capability", profile.capabilities],
+      ["external skill", profile.externalSkills],
+    ] as const) {
+      for (const duplicate of findDuplicateValues(collection[1])) {
+        errors.push(`role ${profile.id} repeats ${collection[0]} ${duplicate}`);
+      }
+    }
+    for (const capabilityId of profile.capabilities) {
+      if (!capabilityIds.has(capabilityId)) {
+        errors.push(`role ${profile.id} references unknown capability ${capabilityId}`);
+      }
+    }
+    for (const skillId of profile.externalSkills) {
+      if (!selectedExternalSkills.has(skillId)) {
+        errors.push(`role ${profile.id} references unknown external skill ${skillId}`);
+      }
+    }
+  }
+}
+
 /** Validate the references and safety invariants shared by all Saber commands. */
 export function validateRepositoryConfig(input: RepositoryValidationInput): string[] {
   const errors: string[] = [];
@@ -363,6 +413,7 @@ export function validateRepositoryConfig(input: RepositoryValidationInput): stri
   validateConnectors(input, errors);
   validateCapabilityReferences(input, errors);
   validateExternalAssets(input, errors);
+  validateRoleProfiles(input, errors);
 
   return errors;
 }
