@@ -57,7 +57,7 @@ test("the checked-in catalog has every required capability and safe connector te
   }
 });
 
-test("saber.yaml is the single repository configuration and connector values stay unset", async () => {
+test("saber.yaml stays minimal while the preset keeps connector values unset", async () => {
   const content = await readFile(join(repositoryRoot, "saber.yaml"), "utf8");
   const environmentNames = [
     "IDEA_MCP_COMMAND",
@@ -71,12 +71,14 @@ test("saber.yaml is the single repository configuration and connector values sta
     "GIT_PUSH_ACCOUNT_ID",
   ];
 
-  for (const section of ["workspace", "capabilities", "connectors", "externalAssets"]) {
+  for (const section of ["workspace", "externalSkills"]) {
     assert.match(content, new RegExp(`^${section}:`, "mu"));
   }
+  assert.match(content, /^schemaVersion: 2$/mu);
+  assert.match(content, /^\s+preset: standard$/mu);
+  assert.doesNotMatch(content, /^(?:safety|capabilities|connectors|externalAssets|roleProfiles):/mu);
   for (const name of environmentNames) {
-    assert.match(content, new RegExp(`^\\s*- ${name}$`, "mu"));
-    assert.doesNotMatch(content, new RegExp(`^\\s*${name}\\s*:`, "mu"));
+    assert.doesNotMatch(content, new RegExp(name, "u"));
   }
 
   for (const retiredPath of [
@@ -90,6 +92,18 @@ test("saber.yaml is the single repository configuration and connector values sta
   ]) {
     await assert.rejects(access(join(repositoryRoot, retiredPath)), { code: "ENOENT" });
   }
+});
+
+test("local configuration is ignored while its documented example is tracked", async () => {
+  const [ignore, example] = await Promise.all([
+    readFile(join(repositoryRoot, ".gitignore"), "utf8"),
+    readFile(join(repositoryRoot, "saber.local.example.yaml"), "utf8"),
+  ]);
+  assert.match(ignore, /^\/saber\.local\.yaml$/mu);
+  assert.match(example, /^schemaVersion: 1$/mu);
+  assert.match(example, /^defaults:$/mu);
+  assert.match(example, /^projects:$/mu);
+  assert.match(example, /^extensions:$/mu);
 });
 
 test(".env.example documents every connector variable without shipping credentials", async () => {

@@ -1,0 +1,23 @@
+# 复制为 saber.local.yaml 后按个人环境填写；该文件不会提交。
+schemaVersion: 1
+
+# 可选个人默认值。role 仅影响上下文，不能授予写权限。
+defaults:
+  role: dev
+  tool: codex
+
+# 只能为团队已声明项目补充安全的 Git 远端；不能改项目路径或新增项目。
+projects:
+  frontend:
+    repository: https://git.example.com/team/frontend.git
+  backend:
+    repository: git@git.example.com:team/backend.git
+
+# 个人技能由后续物化流程从仓库根 skills/<id> 加载。
+# capability 只能引用 standard preset 中已有的 L0/L1 能力。
+extensions:
+  skills:
+    - my-local-skill
+  capabilities:
+    - mysql.read
+    - external.assets.update

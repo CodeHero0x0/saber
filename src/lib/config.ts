@@ -2,6 +2,7 @@ import { parse } from "yaml";
 
 import { SaberError } from "./errors.js";
 import { readTextWithinRoot } from "./files.js";
+import { loadLocalConfig } from "./local-config.js";
 import type {
   Capability,
   ConnectorConfig,
@@ -19,12 +20,14 @@ import type {
   ToolName,
   WorkspaceConfig,
 } from "./models.js";
+import { createStandardPreset } from "./presets.js";
 import {
   isExternalAssetCategory,
   isSafeExternalAssetDescription,
   isSafeExternalAssetId,
   isSafeExternalAssetPackagePath,
   isSafeExternalAssetSource,
+  validateRepositoryConfig,
 } from "./validation.js";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -82,14 +85,6 @@ function optionalStringArray(value: unknown, location: string): string[] | undef
   }
 
   return requireStringArray(value, location);
-}
-
-function requireSchemaVersion(record: Record<string, unknown>): 1 {
-  if (record.schemaVersion !== 1) {
-    throw new SaberError("saber.yaml.schemaVersion must be 1");
-  }
-
-  return 1;
 }
 
 function parseRiskLevel(value: unknown, location: string): RiskLevel {
@@ -402,12 +397,7 @@ function parseExternalAssetsConfig(
   };
 }
 
-/** Load the complete repository-level configuration from the single saber.yaml source. */
-export async function loadRepositoryConfig(repositoryRoot: string): Promise<RepositoryConfig> {
-  const root = requireRecord(
-    parseYaml(await readTextWithinRoot(repositoryRoot, "saber.yaml")),
-    "saber.yaml",
-  );
+function parseV1RepositoryConfig(root: Record<string, unknown>): RepositoryConfig {
   assertKnownKeys(root, "saber.yaml", [
     "schemaVersion",
     "name",
@@ -418,15 +408,95 @@ export async function loadRepositoryConfig(repositoryRoot: string): Promise<Repo
     "externalAssets",
     "roleProfiles",
   ]);
-  const schemaVersion = requireSchemaVersion(root);
-
   return {
-    saber: parseSaberConfig(root, schemaVersion),
-    workspace: parseWorkspaceConfig(root.workspace, schemaVersion),
+    saber: parseSaberConfig(root, 1),
+    workspace: parseWorkspaceConfig(root.workspace, 1),
     capabilities: parseCapabilities(root.capabilities),
     connectors: parseConnectors(root.connectors),
-    externalAssets: parseExternalAssetsConfig(root.externalAssets, schemaVersion),
+    externalAssets: parseExternalAssetsConfig(root.externalAssets, 1),
     roleProfiles:
       root.roleProfiles === undefined ? [] : parseRoleProfiles(root.roleProfiles),
   };
+}
+
+function parseV2Project(value: unknown, index: number): ProjectConfig {
+  const location = `saber.yaml.workspace.projects[${index}]`;
+  const record = requireRecord(value, location);
+  assertKnownKeys(record, location, ["name", "path", "capabilities"]);
+  const capabilities = optionalStringArray(record.capabilities, `${location}.capabilities`);
+  return {
+    name: requireString(record.name, `${location}.name`),
+    path: requireString(record.path, `${location}.path`),
+    ...(capabilities === undefined ? {} : { capabilities }),
+  };
+}
+
+function parseV2TeamConfig(root: Record<string, unknown>): RepositoryConfig {
+  assertKnownKeys(root, "saber.yaml", ["schemaVersion", "name", "workspace", "externalSkills"]);
+  const workspace = requireRecord(root.workspace, "saber.yaml.workspace");
+  assertKnownKeys(workspace, "saber.yaml.workspace", ["tools", "projects"]);
+  if (!Array.isArray(workspace.projects)) {
+    throw new SaberError("saber.yaml.workspace.projects must be a list");
+  }
+
+  const preset = createStandardPreset();
+  preset.saber.name = requireString(root.name, "saber.yaml.name");
+  preset.workspace.projects = workspace.projects.map((project, index) =>
+    parseV2Project(project, index),
+  );
+
+  if (workspace.tools !== undefined) {
+    const tools = requireRecord(workspace.tools, "saber.yaml.workspace.tools");
+    assertKnownKeys(tools, "saber.yaml.workspace.tools", ["default"]);
+    if (tools.default !== undefined) {
+      preset.workspace.tools.default = parseToolName(
+        tools.default,
+        "saber.yaml.workspace.tools.default",
+      );
+    }
+  }
+
+  const externalSkills = requireRecord(root.externalSkills, "saber.yaml.externalSkills");
+  assertKnownKeys(externalSkills, "saber.yaml.externalSkills", ["preset"]);
+  if (externalSkills.preset !== "standard") {
+    throw new SaberError("saber.yaml.externalSkills.preset must be standard");
+  }
+  return preset;
+}
+
+function assertValidResolvedConfig(config: RepositoryConfig): void {
+  if (validateRepositoryConfig(config).length > 0) {
+    // Cross-reference errors can contain user-controlled identifiers. Keep the
+    // loading boundary generic so config values and credentials are never echoed.
+    throw new SaberError("saber.yaml failed cross-configuration validation");
+  }
+}
+
+/** Load and resolve repository configuration, including restricted local preferences for v2. */
+export async function loadRepositoryConfig(repositoryRoot: string): Promise<RepositoryConfig> {
+  const root = requireRecord(
+    parseYaml(await readTextWithinRoot(repositoryRoot, "saber.yaml")),
+    "saber.yaml",
+  );
+  if (root.schemaVersion === 1) {
+    const config = parseV1RepositoryConfig(root);
+    assertValidResolvedConfig(config);
+    return config;
+  }
+  if (root.schemaVersion !== 2) {
+    throw new SaberError("saber.yaml.schemaVersion must be 1 or 2");
+  }
+
+  const config = parseV2TeamConfig(root);
+  const local = await loadLocalConfig(repositoryRoot, config);
+  if (local.defaults.tool !== undefined) {
+    config.workspace.tools.default = local.defaults.tool;
+  }
+  for (const project of config.workspace.projects) {
+    const override = local.projects[project.name];
+    if (override !== undefined) project.repository = override.repository;
+  }
+  config.local = local;
+  assertValidResolvedConfig(config);
+  return config;
 }

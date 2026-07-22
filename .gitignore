@@ -2,6 +2,7 @@
 /.env
 /.env.*
 !/.env.example
+/saber.local.yaml
 /projects/
 /.saber/
 /.agents/skills/saber--*/

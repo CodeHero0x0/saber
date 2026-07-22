@@ -1350,7 +1350,29 @@ test("external command rejects unknown flags, malformed syntax, and unknown asse
 
 test("configuration requires selected packages, safe source paths, and credential-free Git sources", async () => {
   const root = await temporaryRepository("saber-external-registry-validation-");
-  const source = await readFile(join(repositoryRoot, "saber.yaml"), "utf8");
+  const source = `schemaVersion: 1
+name: External asset fixture
+safety:
+  externalWrites: preview-and-confirm
+  forbiddenRiskLevels: [L3]
+workspace:
+  tools:
+    default: codex
+  projects: []
+capabilities: []
+connectors: []
+roleProfiles: []
+externalAssets:
+  assets:
+    - id: superpowers
+      category: skill-collection
+      description: Safe test asset
+      kind: git
+      source: https://github.com/obra/superpowers.git
+      packages:
+        - id: brainstorming
+          sourcePath: skills/brainstorming
+`;
   const invalidCatalogs = [
     source.replace("category: skill-collection", "category: unsupported"),
     source.replace("source: https://github.com/obra/superpowers.git", "source: --config=unsafe"),
