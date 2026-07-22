@@ -9,6 +9,7 @@ import {
   runConvenienceCommand,
   type ConvenienceCommandDependencies,
 } from "../src/commands/convenience.js";
+import type { DoctorReport } from "../src/commands/doctor.js";
 import { SaberError } from "../src/lib/errors.js";
 import type { MaterializeResult } from "../src/lib/materialize.js";
 import type { RepositoryConfig, RoleName, ToolName } from "../src/lib/models.js";
@@ -196,6 +197,7 @@ test("use resolves explicit, personal, then team tool precedence and forwards a 
 
 const status: WorkitemStatusReport = {
   key: "ABC-1",
+  fingerprint: "abc",
   source: {
     kind: "jira",
     title: "Checkout fails after payment",
@@ -218,6 +220,15 @@ const status: WorkitemStatusReport = {
   artifacts: [{ path: "requirements.md", state: "present" }, { path: "tests.md", state: "missing" }],
   handoffCount: 1,
   suggestion: "saber next ABC-1 --result pass|fail|blocked",
+};
+
+const doctorReport: DoctorReport = {
+  node: { state: "available", version: "v20.0.0" },
+  git: { state: "available", version: "git version 2.0.0" },
+  config: { state: "valid", errors: [] },
+  connectors: [],
+  tools: [],
+  externalAssets: { state: "not-inspected" },
 };
 
 test("open and loop render status, route and history without filesystem access", async () => {
@@ -298,7 +309,7 @@ test("setup never overwrites local config and previews external updates by defau
       cwd: root,
       dependencies: {
         loadConfig: async () => config(),
-        doctor: async () => ({ marker: "doctor" }),
+        doctor: async () => doctorReport,
         externalUpdate: async (argv) => {
           externalArgs.push([...argv]);
           return { exitCode: 0, stdout: '{"mode":"preview"}\n', stderr: "" };
@@ -325,7 +336,7 @@ test("setup creates local config only for ENOENT and stops on other filesystem e
       cwd: notDirectory,
       dependencies: {
         loadConfig: async () => config(),
-        doctor: async () => { sideEffects += 1; return { marker: "doctor" }; },
+        doctor: async () => { sideEffects += 1; return doctorReport; },
         externalUpdate: async () => {
           sideEffects += 1;
           return { exitCode: 0, stdout: "{}\n", stderr: "" };
@@ -349,7 +360,7 @@ test("setup creates a missing local config exclusively and keeps apply plus conf
       cwd: root,
       dependencies: {
         loadConfig: async () => config(),
-        doctor: async () => ({ marker: "doctor" }),
+        doctor: async () => doctorReport,
         externalUpdate: async (argv) => {
           externalArgs.push([...argv]);
           return { exitCode: 0, stdout: '{"mode":"apply"}\n', stderr: "" };
