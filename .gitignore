@@ -1,4 +1,7 @@
 /.superpowers/
+/.env
+/.env.*
+!/.env.example
 /projects/
 /.saber/
 /.agents/skills/saber--*/

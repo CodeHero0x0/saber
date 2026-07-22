@@ -92,6 +92,26 @@ test("saber.yaml is the single repository configuration and connector values sta
   }
 });
 
+test(".env.example documents every connector variable without shipping credentials", async () => {
+  const content = await readFile(join(repositoryRoot, ".env.example"), "utf8");
+  for (const name of [
+    "JIRA_BASE_URL",
+    "JIRA_ACCOUNT_ID",
+    "JIRA_API_TOKEN",
+    "GITLAB_BASE_URL",
+    "GITLAB_ACCOUNT_ID",
+    "GITLAB_API_TOKEN",
+    "GIT_PUSH_ACCOUNT_ID",
+    "MYSQL_MCP_COMMAND",
+    "IDEA_MCP_COMMAND",
+  ]) {
+    assert.match(content, new RegExp(`^${name}=`, "mu"));
+  }
+  assert.match(content, /JIRA_API_TOKEN=""/u);
+  assert.match(content, /GITLAB_API_TOKEN=""/u);
+  assert.doesNotMatch(content, /(?:ghp_|glpat-|sk-[A-Za-z0-9])/u);
+});
+
 test("role, workflow, and skill assets retain their minimum usable contracts", async () => {
   const roleFiles = ["ba.md", "dev.md", "qa.md"];
   const roleSections = ["Responsible human", "Required input", "Output", "Handoff"];
