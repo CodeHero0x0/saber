@@ -5,5 +5,6 @@ runtime state. The checked-in `roles/`, `workflows/`, `skills/`, and `saber.yaml
 source of truth.
 
 Keep the Saber repository and each Git repository under `projects/` separate. Role selection is
-workflow context, not permission. L2 external writes require a visible preview and exact human
-confirmation; L3 actions are not supported.
+workflow context, not permission. When a workitem is BA-accepted into `done`, commit and push
+its `workitems/<KEY>/` delivery pack to the Saber remote in the same close. L2 external writes
+require a visible preview and exact human confirmation; L3 actions are not supported.

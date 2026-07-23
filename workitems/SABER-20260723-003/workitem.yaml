@@ -1,0 +1,27 @@
+schemaVersion: 3
+key: SABER-20260723-003
+source:
+  kind: chat
+  title: 关闭工作项时将交付材料推送到 Saber 仓
+  snapshot: intake.md
+  fingerprint: sha256:1c0fd93ae0784dead1a1bcbfb5f92fe8ed08a0ad7a279b87abad6e193fa24225
+  capturedAt: 2026-07-23T04:33:28.055Z
+  references:
+    - chat/saber-workitem-push-on-close/2026-07-23
+repositories:
+  - name: backend
+    path: projects/backend
+workflow:
+  state: dev-build
+  role: dev
+  iteration: 0
+  pausedFrom: null
+  pauseReason: null
+  updatedAt: 2026-07-23T04:33:57.855Z
+  history:
+    - from: ba-clarify
+      to: dev-build
+      result: ready
+      role: ba
+      recordedAt: 2026-07-23T04:33:57.855Z
+      summary: BA 已确认关闭项须推送 workitems 交付材料到 Saber，并补推 001/002。

@@ -7,6 +7,10 @@ Use the checked-in `roles/`, `workflows/`, `skills/`, and `saber.yaml` as the so
 Business repositories under `projects/` are independent Git repositories. Do not commit their
 source code or generated Saber runtime files to this repository.
 
+When a workitem reaches final BA `accept` and transitions to `done`, commit and push that
+workitem's delivery pack under `workitems/<KEY>/` to this Saber repository remote. Do not wait
+for a later cleanup pass; closed evidence must be on the remote with the close.
+
 Treat role profiles as context, not authorization. Read operations may run automatically; use
 `saber action preview` and an exact confirmation token before any L2 external write. L3 actions
 are forbidden in the MVP.

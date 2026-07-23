@@ -30,6 +30,8 @@ description: Use when a captured request needs confirmed scope and acceptance cr
 
 The BA explicitly confirms scope and observable acceptance criteria. Dev work cannot begin with hidden assumptions. At final acceptance, the BA records accept or reject against those same criteria.
 
+After BA `accept` moves the workitem to `done`, the delivery pack under `workitems/<KEY>/` must be committed and pushed to the Saber repository remote as part of closing. Business project sources under `projects/` stay out of this repository.
+
 The AI tool calls the internal workflow transition interface only after capturing the BA-owned conclusion. Business users express ready, accept, reject or blocked in `/saber` or natural language; they do not operate the state machine CLI directly.
 
 ## Pause condition
