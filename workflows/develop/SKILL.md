@@ -9,7 +9,7 @@ description: Use when confirmed requirements must be converted into a cross-repo
 
 - `requirements.md` has a current BA confirmation tied to the current source fingerprint.
 - Target repositories and their current branches are known.
-- A responsible Dev is identified.
+- A team member is ready to implement the confirmed requirement.
 
 ## Steps
 
@@ -17,7 +17,7 @@ description: Use when confirmed requirements must be converted into a cross-repo
 2. Write the smallest testable design and per-repository plan before modifying code.
 3. Implement in each independent project repository using that repository's normal branch and commit flow.
 4. Run relevant local checks and record commands, results and known limitations.
-5. Update repository evidence and create a Dev-to-QA handoff that can be reviewed without chat history.
+5. Update repository and verification evidence so the next action does not depend on chat history.
 6. Before any L2 action such as push, MR creation or external-item update, call the preview interface and wait for the exact confirmation token bound to that preview. Never execute L3 actions.
 
 ## Artifacts
@@ -25,13 +25,12 @@ description: Use when confirmed requirements must be converted into a cross-repo
 - `workitems/<KEY>/design.md`
 - `workitems/<KEY>/plan.md`
 - `workitems/<KEY>/repositories.yaml`
-- A Dev-to-QA handoff record with commit and test evidence references
 
 ## Gate
 
 Each target repository has a clear owner, branch, implementation evidence and verification plan; cross-repository assumptions are documented. The responsible Dev explicitly records ready or blocked.
 
-The AI tool writes that conclusion through the internal workflow transition interface. Business users request design, implementation and handoff through `/saber` or natural language, without invoking state progression CLI.
+The AI tool writes that conclusion through the internal workflow transition interface. Team members request design or implementation through `/saber` or natural language, without invoking state progression CLI.
 
 ## Pause condition
 

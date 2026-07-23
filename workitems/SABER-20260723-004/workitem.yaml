@@ -1,0 +1,69 @@
+schemaVersion: 4
+key: SABER-20260723-004
+source:
+  kind: chat
+  title: 统一初始化与对话驱动工作流 clean break
+  snapshot: intake.md
+  fingerprint: sha256:7a8d3b802ad16aaa874181d4632b58d1846f2909ea9953686bffe41e8fda7ba9
+  capturedAt: 2026-07-23T13:45:42.191Z
+  references:
+    - docs/superpowers/specs/2026-07-23-unified-init-and-workflow-design.md
+repositories:
+  - name: saber
+    path: src
+workflow:
+  state: ba-accept
+  role: ba
+  iteration: 1
+  pausedFrom: null
+  pauseReason: null
+  updatedAt: 2026-07-23T14:16:01.312Z
+  history:
+    - from: ba-clarify
+      to: dev-build
+      result: ready
+      role: ba
+      recordedAt: 2026-07-23T13:46:48.750Z
+      summary: 维护者已批准统一入口、原生 MCP 与删除历史兼容的 clean-break 范围。
+      risk: 主要风险是原生 MCP 绕过 L2 门禁及大规模测试删减，已纳入设计和回归计划。
+      next: 完成实现并补齐定向安全回归。
+    - from: dev-build
+      to: qa-verify
+      result: ready
+      role: dev
+      recordedAt: 2026-07-23T14:08:45.862Z
+      summary: 统一初始化、原生 MCP、clean-break CLI 与 schema v4 已实现。
+      risk: 旧生成态仍在本地 ignored 目录中，清理命令尚未获自动审批；源代码与测试不依赖该状态。
+      next: 执行 QA 证据复核并确认安全回归。
+    - from: qa-verify
+      to: ba-accept
+      result: pass
+      role: qa
+      recordedAt: 2026-07-23T14:09:07.302Z
+      summary: 117 项完整测试、类型检查、构建、配置校验、diff 与依赖审计均通过。
+      risk: 仓库仍有用户授权的未提交 clean-break 变更；关闭事项前必须先生成提交预览并取得精确 L2 token。
+      next: 进入 BA 验收，确认删除历史兼容并保留当前七件套证据。
+    - from: ba-accept
+      to: dev-fix
+      result: reject
+      role: ba
+      recordedAt: 2026-07-23T14:16:00.546Z
+      summary: 发现根仓无法通过受控 git.push connector 生成关闭预览。
+      risk: 若直接进入 done，将无法满足交付包提交并受控推送的仓库规则。
+      next: 为 git.push 增加显式 project=. 根仓目标并补回归。
+    - from: dev-fix
+      to: qa-verify
+      result: ready
+      role: dev
+      recordedAt: 2026-07-23T14:16:01.005Z
+      summary: git.push 现支持 project=.，根仓目标、远端、分支、commit 与账户均绑定预览 token。
+      risk: 旧 ignored 生成态清理仍因审批服务不可用而未执行。
+      next: 复跑完整回归并重新进入 QA。
+    - from: qa-verify
+      to: ba-accept
+      result: pass
+      role: qa
+      recordedAt: 2026-07-23T14:16:01.312Z
+      summary: 新增根仓 push preview 用例后，118 项完整测试及 check/build/diff 再次通过。
+      risk: 关闭仍需先提交当前变更，再为根仓 push 生成 L2 preview 并取得精确 token。
+      next: 完成最终 BA 验收和受控 Git 交付。

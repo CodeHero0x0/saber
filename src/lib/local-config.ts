@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { parse } from "yaml";
 
 import { SaberError } from "./errors.js";
-import type { LocalConfig, RepositoryConfig, RoleName, ToolName } from "./models.js";
+import type { LocalConfig, RepositoryConfig, ToolName } from "./models.js";
 import {
   isSafeExternalAssetId,
   isSafeExternalAssetSource,
@@ -55,13 +55,6 @@ function optionalStringArray(value: unknown, location: string): string[] {
   return value.map((item, index) => requireString(item, `${location}[${index}]`));
 }
 
-function parseRole(value: unknown, location: string): RoleName {
-  if (value === "ba" || value === "dev" || value === "qa") {
-    return value;
-  }
-  throw new SaberError(`${location} must be ba, dev, or qa`);
-}
-
 function parseTool(value: unknown, location: string): ToolName {
   if (isToolName(value)) {
     return value;
@@ -85,10 +78,7 @@ function parseLocalConfig(value: unknown, preset: RepositoryConfig): LocalConfig
   const defaults: LocalConfig["defaults"] = {};
   if (root.defaults !== undefined) {
     const record = requireRecord(root.defaults, `${localConfigFilename}.defaults`);
-    assertKnownKeys(record, `${localConfigFilename}.defaults`, ["role", "tool"]);
-    if (record.role !== undefined) {
-      defaults.role = parseRole(record.role, `${localConfigFilename}.defaults.role`);
-    }
+    assertKnownKeys(record, `${localConfigFilename}.defaults`, ["tool"]);
     if (record.tool !== undefined) {
       defaults.tool = parseTool(record.tool, `${localConfigFilename}.defaults.tool`);
     }

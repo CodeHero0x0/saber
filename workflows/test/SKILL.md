@@ -1,15 +1,15 @@
 ---
 name: test
-description: Use when QA needs to turn confirmed acceptance criteria and a Dev handoff into reproducible quality evidence.
+description: Use when confirmed acceptance criteria and implementation evidence must become reproducible quality evidence.
 ---
 
 # Test workflow
 
 ## Entry conditions
 
-- A BA-approved requirement and a Dev handoff are present.
+- A confirmed requirement and implementation evidence are present.
 - The changed repository commits and intended test environments are identified.
-- A responsible QA is identified.
+- A team member is ready to verify the change.
 
 ## Steps
 
@@ -17,13 +17,12 @@ description: Use when QA needs to turn confirmed acceptance criteria and a Dev h
 2. Run relevant automated and manual checks; preserve commands and stable evidence references rather than copying long logs.
 3. Distinguish passed checks, failed checks, blocked checks and untested risk.
 4. Re-check the source fingerprint before making a quality conclusion.
-5. On failure, record reproducible evidence and hand off to Dev; on pass, map every acceptance criterion to evidence and hand off to BA.
+5. On failure, record reproducible evidence; on pass, map every acceptance criterion to evidence.
 
 ## Artifacts
 
 - `workitems/<KEY>/tests.md`
 - Updated `workitems/<KEY>/repositories.yaml` evidence references
-- A QA handoff to Dev or BA
 
 ## Gate
 

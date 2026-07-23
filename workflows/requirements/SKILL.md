@@ -8,8 +8,8 @@ description: Use when a captured request needs confirmed scope and acceptance cr
 ## Entry conditions
 
 - `intake.md` contains a traceable chat, document, external-item or manual source snapshot.
-- `workitem.yaml` records a schema v3 `source` descriptor and its fingerprint.
-- A responsible BA is identified.
+- `workitem.yaml` records a schema v4 `source` descriptor and its fingerprint.
+- A team member is ready to clarify and confirm the requirement.
 
 ## Steps
 
@@ -17,18 +17,17 @@ description: Use when a captured request needs confirmed scope and acceptance cr
 2. Ask only the questions needed to define scope, non-scope, users, constraints and acceptance criteria.
 3. Record confirmed answers in `requirements.md` and label every unresolved point as open.
 4. Re-check the source fingerprint before recording a BA conclusion; if it changed, pause for the responsible BA to compare and reconfirm.
-5. Save a concise BA-to-Dev handoff that lets Dev continue without chat history.
+5. Save concise continuation context in the core artifacts and workflow history.
 
 ## Artifacts
 
 - `workitems/<KEY>/intake.md`
 - `workitems/<KEY>/requirements.md`
 - `workitems/<KEY>/workitem.yaml` with the current source fingerprint
-- A BA-to-Dev handoff record
 
 ## Gate
 
-The BA explicitly confirms scope and observable acceptance criteria. Dev work cannot begin with hidden assumptions. At final acceptance, the BA records accept or reject against those same criteria.
+A human explicitly confirms scope and observable acceptance criteria. Implementation cannot begin with hidden assumptions. At final acceptance, a human records accept or reject against those same criteria.
 
 After BA `accept` moves the workitem to `done`, the delivery pack under `workitems/<KEY>/` must be committed and pushed to the Saber repository remote as part of closing. Business project sources under `projects/` stay out of this repository.
 

@@ -83,6 +83,16 @@ function parseMcpStringArray(value: unknown, location: string): string[] {
   return value.map((item, index) => requireMcpString(item, `${location}[${index}]`));
 }
 
+function parseEnvironmentVariableNames(value: unknown, location: string): string[] {
+  const names = parseMcpStringArray(value, location);
+  for (const name of names) {
+    if (!environmentVariableName.test(name)) {
+      throw new SaberError(`${location} values must name environment variables`);
+    }
+  }
+  return names;
+}
+
 function parseEnvironmentReferences(
   value: unknown,
   location: string,
@@ -152,11 +162,7 @@ export function parseMcpServers(value: unknown, location: string): McpServerConf
         command: requireMcpString(record.command, `${itemLocation}.command`),
         args: parseMcpStringArray(record.args, `${itemLocation}.args`),
         ...(cwd === undefined ? {} : { cwd }),
-        env: parseEnvironmentReferences(
-          record.env,
-          `${itemLocation}.env`,
-          "environment variable",
-        ),
+        env: parseEnvironmentVariableNames(record.env, `${itemLocation}.env`),
         tools: parseMcpTools(record.tools, `${itemLocation}.tools`),
       };
     }
@@ -332,6 +338,7 @@ function validateMcpServers(
   scope: string,
 ): void {
   const capabilityIds = new Set(capabilities.map((capability) => capability.id));
+  const capabilitiesById = new Map(capabilities.map((capability) => [capability.id, capability]));
   for (const duplicate of findDuplicateValues(servers.map((server) => server.id))) {
     errors.push(`${scope} repeats MCP server id ${duplicate}`);
   }
@@ -349,6 +356,11 @@ function validateMcpServers(
     for (const tool of server.tools) {
       if (!capabilityIds.has(tool.capability)) {
         errors.push(`${scope} MCP server ${server.id} references unknown capability`);
+      } else {
+        const capability = capabilitiesById.get(tool.capability)!;
+        if (capability.risk !== "L0" && capability.risk !== "L1") {
+          errors.push(`${scope} MCP server ${server.id} cannot expose L2/L3 capability through native MCP`);
+        }
       }
     }
 
@@ -359,10 +371,13 @@ function validateMcpServers(
       if (server.cwd !== undefined && !isSafeMcpCwd(server.cwd)) {
         errors.push(`${scope} MCP server ${server.id} has unsafe cwd`);
       }
-      for (const [name, source] of Object.entries(server.env)) {
-        if (!environmentVariableName.test(name) || !environmentVariableName.test(source)) {
+      for (const name of server.env) {
+        if (!environmentVariableName.test(name)) {
           errors.push(`${scope} MCP server ${server.id} has invalid environment reference`);
         }
+      }
+      for (const duplicate of findDuplicateValues(server.env)) {
+        errors.push(`${scope} MCP server ${server.id} repeats environment variable ${duplicate}`);
       }
     } else {
       if (!isSafeMcpHttpUrl(server.url)) {

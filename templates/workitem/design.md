@@ -12,7 +12,7 @@
 
 ## Risks and decisions
 
-- [ ] Link accepted decisions from `decisions/`.
+- [ ] Record accepted decisions and their evidence links here.
 - [ ] Record assumptions that need human confirmation.
 
 ## Review gate

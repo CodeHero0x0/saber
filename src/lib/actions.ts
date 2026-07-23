@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { link, lstat, mkdir, readFile, unlink, writeFile } from "node:fs/promises";
+import { link, lstat, mkdir, readFile, realpath, unlink, writeFile } from "node:fs/promises";
 import { devNull } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -21,8 +21,6 @@ import {
   prepareHttpCapability,
   resolveHttpTarget,
 } from "./http.js";
-import { connectMcpServer, type McpClientLike } from "./mcp/client.js";
-import { fingerprintMcpValue, resolveMcpRuntime, type McpRuntimeDescriptor } from "./mcp/runtime.js";
 import type { Capability, ConnectorConfig, RepositoryConfig, RiskLevel } from "./models.js";
 
 type JsonPrimitive = null | boolean | number | string;
@@ -42,15 +40,15 @@ export type ActionPreview = Omit<PreviewRecord, "state" | "targetDigest" | "nonc
   risk: RiskLevel;
   state: "previewed";
   /** Reviewed connector operation; never contains credential values or private service base URLs. */
-  operation?: HttpActionPreview | GitPushActionPreview | McpActionPreview;
+  operation?: HttpActionPreview | GitPushActionPreview;
 };
 
 export type ActionExecution = {
   state: "executed" | "uncertain";
   capabilityId: string;
   risk: RiskLevel;
-  connector: "jira" | "gitlab" | "git" | "mcp";
-  method: "GET" | "POST" | "PUT" | "PUSH" | "CALL";
+  connector: "jira" | "gitlab" | "git";
+  method: "GET" | "POST" | "PUT" | "PUSH";
   path: string;
   status: number;
   data: import("./http.js").JsonValue | null;
@@ -66,7 +64,6 @@ export type ActionExecutionDependencies = HttpExecutionDependencies & {
   /** Required only for L2 actions and never sent to the remote connector. */
   confirmation?: string;
   runner?: SafeProcessRunner;
-  connectMcp?: typeof connectMcpServer;
 };
 
 export type ActionPreviewDependencies = {
@@ -105,20 +102,6 @@ type GitPushActionPreview = {
     };
   };
   changes: { commit: string };
-};
-
-type McpActionPreview = {
-  account: {
-    credentialVariable: "configured MCP environment references";
-    state: "resolved-at-execution";
-  };
-  target: {
-    connector: "mcp";
-    method: "CALL";
-    path: string;
-    resource: { server: string; tool: string; transport: "stdio" | "http"; target: string };
-  };
-  changes: { arguments: JsonValue };
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -225,10 +208,9 @@ export function calculatePreviewToken(
 type PreparedActionContext = {
   targetDigest: string;
   request?: PreparedHttpRequest;
-  operation?: HttpActionPreview | GitPushActionPreview | McpActionPreview;
+  operation?: HttpActionPreview | GitPushActionPreview;
   targetUrl?: string;
   gitPush?: PreparedGitPush;
-  mcp?: PreparedMcp;
 };
 
 type PreparedGitPush = {
@@ -238,14 +220,6 @@ type PreparedGitPush = {
   branch: string;
   commit: string;
   remoteSource: string;
-};
-
-type PreparedMcp = {
-  descriptor: McpRuntimeDescriptor;
-  serverId: string;
-  toolName: string;
-  readToolName?: string;
-  readCapabilityId?: string;
 };
 
 /**
@@ -314,12 +288,15 @@ async function prepareGitPushContext(
     throw new SaberError("invalid git.push remote", 2);
   }
   const project = config.workspace.projects.find((candidate) => candidate.name === projectName);
-  if (project === undefined) {
+  if (project === undefined && projectName !== ".") {
     throw new SaberError(`unknown git.push project ${projectName}`, 2);
   }
   let projectPath: string;
+  const projectRelativePath = projectName === "." ? "." : project!.path;
   try {
-    projectPath = await resolveExistingPathWithinRoot(repositoryRoot, project.path);
+    projectPath = projectName === "."
+      ? await realpath(repositoryRoot)
+      : await resolveExistingPathWithinRoot(repositoryRoot, project!.path);
     if (!(await lstat(projectPath)).isDirectory()) {
       throw new Error("not a directory");
     }
@@ -371,7 +348,7 @@ async function prepareGitPushContext(
     remoteSource,
   };
   const targetDigest = digest(
-    `saber-git-push-v1\u0000${projectName}\u0000${project.path}\u0000${remote}\u0000${remoteSource}\u0000${branch}\u0000${gitPush.commit}\u0000${account}`,
+    `saber-git-push-v1\u0000${projectName}\u0000${projectRelativePath}\u0000${remote}\u0000${remoteSource}\u0000${branch}\u0000${gitPush.commit}\u0000${account}`,
   );
   return {
     targetDigest,
@@ -386,7 +363,7 @@ async function prepareGitPushContext(
       target: {
         connector: "git",
         method: "PUSH",
-        path: project.path,
+        path: projectRelativePath,
         resource: {
           project: projectName,
           remote,
@@ -399,170 +376,6 @@ async function prepareGitPushContext(
   };
 }
 
-function mcpServers(config: RepositoryConfig): RepositoryConfig["mcp"]["servers"] {
-  return [
-    ...(config.mcp?.servers ?? []),
-    ...(config.local?.mcp?.servers ?? []),
-  ];
-}
-
-function isSensitiveMcpKey(key: string): boolean {
-  return /(?:token|secret|password|authorization|credential|api[-_]?key)/iu.test(key);
-}
-
-function collectSensitiveMcpStrings(value: JsonValue, key?: string, found = new Set<string>()): Set<string> {
-  if (key !== undefined && isSensitiveMcpKey(key) && typeof value === "string" && value.length > 0) {
-    found.add(value);
-  }
-  if (Array.isArray(value)) {
-    for (const item of value) collectSensitiveMcpStrings(item, undefined, found);
-  } else if (isRecord(value)) {
-    for (const [entryKey, entryValue] of Object.entries(value)) {
-      collectSensitiveMcpStrings(entryValue as JsonValue, entryKey, found);
-    }
-  }
-  return found;
-}
-
-const sensitiveMcpAssignmentName = String.raw`(?:[A-Za-z0-9_-]*(?:api[-_]?key|authorization|credential|password|passwd|pwd|secret|token)[A-Za-z0-9_-]*|api key)`;
-
-function redactEmbeddedMcpSecrets(value: string): string {
-  const authorizationScheme = /\b([A-Za-z0-9_-]*authorization[A-Za-z0-9_-]*\b\s*(?:=|:)\s*)(?:Bearer|Basic)\s+[^\s&,;]+/giu;
-  const quotedAssignment = new RegExp(
-    String.raw`(\b${sensitiveMcpAssignmentName}\b\s*(?:=|:)\s*)(["'])([^"']*)(["'])`,
-    "giu",
-  );
-  const unquotedAssignment = new RegExp(
-    String.raw`(\b${sensitiveMcpAssignmentName}\b\s*(?:=|:)\s*)(?:Bearer\s+)?([^\s&,;]+)`,
-    "giu",
-  );
-  return value
-    .replace(authorizationScheme, "$1[REDACTED]")
-    .replace(quotedAssignment, (_match, prefix: string, quote: string) =>
-      `${prefix}${quote}[REDACTED]${quote}`)
-    .replace(unquotedAssignment, "$1[REDACTED]")
-    .replace(/\bBearer\s+[^\s&,;]+/giu, "Bearer [REDACTED]");
-}
-
-function redactMcpValue(value: JsonValue, secrets: ReadonlySet<string>, key?: string): JsonValue {
-  if (
-    key !== undefined &&
-    isSensitiveMcpKey(key)
-  ) {
-    return "[REDACTED]";
-  }
-  if (typeof value === "string") {
-    let redacted = value;
-    for (const secret of secrets) redacted = redacted.split(secret).join("[REDACTED]");
-    return redactEmbeddedMcpSecrets(redacted);
-  }
-  if (Array.isArray(value)) {
-    return value.map((item) => redactMcpValue(item, secrets));
-  }
-  if (isRecord(value)) {
-    return Object.fromEntries(
-      Object.entries(value).map(([entryKey, entryValue]) => [
-        entryKey,
-        redactMcpValue(entryValue as JsonValue, secrets, entryKey),
-      ]),
-    ) as JsonValue;
-  }
-  return value;
-}
-
-function normalizedMcpArguments(payload: unknown): JsonValue {
-  if (!isRecord(payload)) {
-    throw new SaberError("MCP action arguments must be a JSON object", 2);
-  }
-  return JSON.parse(canonicalizeJsonPayload(payload)) as JsonValue;
-}
-
-function mcpConfigDigest(config: RepositoryConfig): string {
-  return fingerprintMcpValue({
-    capabilities: config.capabilities,
-    mcp: config.mcp,
-    localMcp: config.local?.mcp,
-    selectedTeamServers: config.local?.extensions?.mcpServers,
-  });
-}
-
-function mcpActionContext(
-  repositoryRoot: string,
-  config: RepositoryConfig | undefined,
-  capability: Capability,
-  payload: unknown,
-): PreparedActionContext | undefined {
-  if (config === undefined) return undefined;
-  const resolved = resolveMcpRuntime(repositoryRoot, config, {
-    tool: config.workspace.tools.default,
-    target: "workspace",
-    capabilities: [capability.id],
-  });
-  const mappings = resolved.descriptors.flatMap((descriptor) =>
-    descriptor.tools
-      .filter((tool) => tool.capability === capability.id)
-      .map((tool) => ({ descriptor, tool })),
-  );
-  if (mappings.length === 0) return undefined;
-  if (capability.risk !== "L2" || capability.kind !== "action") {
-    throw new SaberError("use the native L0/L1 MCP tool directly", 2);
-  }
-  if (mappings.length !== 1) {
-    throw new SaberError("capability must have exactly one MCP server/tool mapping", 2);
-  }
-
-  const mapping = mappings[0]!;
-  const server = mcpServers(config).find(
-    (candidate) => candidate.id === mapping.descriptor.server.id,
-  );
-  if (server === undefined) {
-    throw new SaberError("MCP action mapping could not be materialized", 2);
-  }
-  const configDigest = mcpConfigDigest(config);
-  const readMappings = server.tools.filter((tool) => {
-    const mappedCapability = config.capabilities.find((candidate) => candidate.id === tool.capability);
-    return mappedCapability?.kind === "read" && mappedCapability.risk === "L0";
-  });
-  const readToolName = readMappings.length === 1 ? readMappings[0]!.name : undefined;
-  const readCapabilityId = readMappings.length === 1 ? readMappings[0]!.capability : undefined;
-  const targetDigest = fingerprintMcpValue({
-    server,
-    tool: mapping.tool,
-    target: "workspace",
-    configDigest,
-  });
-  const argumentsValue = normalizedMcpArguments(payload);
-  const sensitiveValues = collectSensitiveMcpStrings(argumentsValue);
-  return {
-    targetDigest,
-    mcp: {
-      descriptor: mapping.descriptor,
-      serverId: server.id,
-      toolName: mapping.tool.name,
-      ...(readToolName === undefined ? {} : { readToolName }),
-      ...(readCapabilityId === undefined ? {} : { readCapabilityId }),
-    },
-    operation: {
-      account: {
-        credentialVariable: "configured MCP environment references",
-        state: "resolved-at-execution",
-      },
-      target: {
-        connector: "mcp",
-        method: "CALL",
-        path: `${server.id}/${mapping.tool.name}`,
-        resource: {
-          server: server.id,
-          tool: mapping.tool.name,
-          transport: server.transport,
-          target: "workspace",
-        },
-      },
-      changes: { arguments: redactMcpValue(argumentsValue, sensitiveValues) },
-    },
-  };
-}
-
 async function prepareActionContext(
   repositoryRoot: string,
   config: RepositoryConfig | undefined,
@@ -571,8 +384,6 @@ async function prepareActionContext(
   environment: Readonly<Record<string, string | undefined>>,
   runner: SafeProcessRunner,
 ): Promise<PreparedActionContext> {
-  const mcpContext = mcpActionContext(repositoryRoot, config, capability, payload);
-  if (mcpContext !== undefined) return mcpContext;
   if (capability.id === "git.push") {
     return prepareGitPushContext(
       repositoryRoot,
@@ -856,7 +667,7 @@ function configuredHttpConnector(
   const connector = config.connectors.find((candidate) => candidate.id === capability.connector);
   if (connector === undefined || connector.kind !== "http") {
     throw new SaberError(
-      "this capability is not backed by an approved HTTP connector; use its native MCP tool",
+      "this capability is not backed by an approved HTTP connector",
       3,
     );
   }
@@ -1220,118 +1031,6 @@ async function executePreparedGitPush(
   };
 }
 
-function safeMcpResult(
-  value: unknown,
-  secrets: ReadonlySet<string>,
-): { valid: true; data: JsonValue } | { valid: false; data: null } {
-  try {
-    const normalized = JSON.parse(canonicalizeJsonPayload(value)) as JsonValue;
-    return { valid: true, data: redactMcpValue(normalized, secrets) };
-  } catch {
-    return { valid: false, data: null };
-  }
-}
-
-async function executePreparedMcp(
-  repositoryRoot: string,
-  prepared: PreparedMcp,
-  payload: unknown,
-  dependencies: ActionExecutionDependencies,
-): Promise<Omit<ActionExecution, "capabilityId" | "risk">> {
-  const normalized = normalizedMcpArguments(payload);
-  const args = normalized as Record<string, JsonValue>;
-  const sensitiveValues = collectSensitiveMcpStrings(normalized);
-  let client: McpClientLike | undefined;
-  try {
-    try {
-      client = await (dependencies.connectMcp ?? connectMcpServer)(
-        repositoryRoot,
-        prepared.descriptor,
-        dependencies.env ?? process.env,
-      );
-      for (const secret of client.secrets ?? []) {
-        if (secret.length > 0) sensitiveValues.add(secret);
-      }
-    } catch {
-      throw new SaberError("could not connect to the configured MCP action server", 3);
-    }
-    let listed: Awaited<ReturnType<McpClientLike["listTools"]>>;
-    try {
-      listed = await client.listTools();
-    } catch {
-      throw new SaberError("could not inspect upstream MCP tools", 2);
-    }
-    const upstreamTools = new Set(listed.tools.map((tool) => tool.name));
-    if (!upstreamTools.has(prepared.toolName)) {
-      throw new SaberError("configured upstream MCP tool was not found", 2);
-    }
-    const readAvailable =
-      prepared.readToolName !== undefined && upstreamTools.has(prepared.readToolName);
-    let writeData: JsonValue | null = null;
-    try {
-      const rawWriteData = await client.callTool({ name: prepared.toolName, arguments: args });
-      const normalizedWrite = safeMcpResult(rawWriteData, sensitiveValues);
-      writeData = normalizedWrite.data;
-    } catch {
-      writeData = null;
-    }
-
-    if (!readAvailable) {
-      return {
-        state: "uncertain",
-        connector: "mcp",
-        method: "CALL",
-        path: `${prepared.serverId}/${prepared.toolName}`,
-        status: 0,
-        data: writeData,
-        reconciliation: { state: "unavailable" },
-      };
-    }
-
-    let reconciliationData: JsonValue | null = null;
-    try {
-      const normalizedRead = safeMcpResult(
-        await client.callTool({ name: prepared.readToolName!, arguments: args }),
-        sensitiveValues,
-      );
-      if (!normalizedRead.valid) {
-        throw new Error("invalid MCP reconciliation result");
-      }
-      reconciliationData = normalizedRead.data;
-    } catch {
-      return {
-        state: "uncertain",
-        connector: "mcp",
-        method: "CALL",
-        path: `${prepared.serverId}/${prepared.toolName}`,
-        status: 0,
-        data: writeData,
-        reconciliation: { state: "unavailable", capabilityId: prepared.readCapabilityId },
-      };
-    }
-    return {
-      state: "uncertain",
-      connector: "mcp",
-      method: "CALL",
-      path: `${prepared.serverId}/${prepared.toolName}`,
-      status: 0,
-      data: writeData,
-      reconciliation: {
-        state: "observed",
-        capabilityId: prepared.readCapabilityId,
-        tool: prepared.readToolName,
-        data: reconciliationData,
-      },
-    };
-  } finally {
-    try {
-      await client?.close?.();
-    } catch {
-      // A close failure cannot justify a second external call.
-    }
-  }
-}
-
 /** Create a local-only preview that binds the canonical payload and non-secret remote target. */
 export async function createActionPreview(
   repositoryRoot: string,
@@ -1406,19 +1105,6 @@ export async function executeAction(
   ) {
     throw confirmationRecoveryError();
   }
-  if (context.mcp !== undefined) {
-    const execution = await executePreparedMcp(
-      repositoryRoot,
-      context.mcp,
-      payload,
-      dependencies,
-    );
-    return {
-      capabilityId: capability.id,
-      risk: capability.risk,
-      ...execution,
-    };
-  }
   if (context.gitPush !== undefined) {
     const execution = await executePreparedGitPush(
       context.gitPush,
@@ -1433,7 +1119,7 @@ export async function executeAction(
   }
   if (context.request === undefined || context.targetUrl === undefined) {
     throw new SaberError(
-      "this capability has no safe HTTP executor; use its native MCP tool or add an approved connector adapter",
+      "this capability has no safe HTTP executor or approved connector adapter",
       3,
     );
   }

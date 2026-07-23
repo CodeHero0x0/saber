@@ -1,4 +1,4 @@
-# 团队配置只声明项目差异；安全策略、角色、能力和连接器来自 standard preset。
+# 团队配置只声明项目差异；安全策略、阶段资产、能力和连接器来自 standard preset。
 schemaVersion: 3
 name: Saber
 
@@ -25,7 +25,7 @@ workspace:
 externalSkills:
   preset: standard
 
-# 团队 MCP 只保存启动参数和环境变量名，不保存密钥值，也不解析 shell 命令字符串。
+# 团队 MCP 只保存 AI 工具的原生安装配置。Saber 不运行或代理 MCP server。
 mcp:
   # 默认不启用任何 MCP；请验证真实命令或 URL 后再取消下面示例的注释。
   servers: []
@@ -38,12 +38,10 @@ mcp:
   #     - tools/idea-mcp/server.js
   #   cwd: .
   #   env:
-  #     IDEA_TOKEN: IDEA_MCP_TOKEN
+  #     - IDEA_MCP_TOKEN
   #   tools:
   #     - name: inspect_project
   #       capability: idea.project.read
-  #     - name: execute_command
-  #       capability: idea.command.execute
 
   # 远程 HTTP 示例：header 的值是 .env 变量名，不是认证信息本身。
   # - id: mysql-mcp
@@ -54,5 +52,3 @@ mcp:
   #   tools:
   #     - name: query
   #       capability: mysql.read
-  #     - name: execute
-  #       capability: mysql.write

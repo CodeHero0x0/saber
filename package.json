@@ -16,7 +16,6 @@
     "saber": "tsx src/cli.ts"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0",
     "dotenv": "^17.4.2",
     "jsonc-parser": "^3.3.1",
     "smol-toml": "^1.7.0",
@@ -26,10 +25,5 @@
     "@types/node": "^22.10.1",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2"
-  },
-  "overrides": {
-    "@modelcontextprotocol/sdk": {
-      "@hono/node-server": "2.0.11"
-    }
   }
 }

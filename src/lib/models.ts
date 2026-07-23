@@ -37,7 +37,8 @@ export type StdioMcpServerConfig = {
   command: string;
   args: string[];
   cwd?: string;
-  env: Record<string, string>;
+  /** Environment variable names forwarded unchanged by each native AI tool. */
+  env: string[];
   tools: McpToolConfig[];
 };
 
@@ -58,7 +59,6 @@ export type McpConfig = {
 export type LocalConfig = {
   schemaVersion: 2;
   defaults: {
-    role?: RoleName;
     tool?: ToolName;
   };
   projects: Record<string, { repository: string }>;

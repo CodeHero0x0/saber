@@ -292,7 +292,6 @@ test("schema v3 applies restricted schema v2 local defaults, repository, and ext
       join(root, "saber.local.yaml"),
       `schemaVersion: 2
 defaults:
-  role: qa
   tool: opencode
 projects:
   app:
@@ -312,7 +311,7 @@ extensions:
       "gitlab.mr.read",
       "idea.project.read",
     ]);
-    assert.deepEqual(config.local?.defaults, { role: "qa", tool: "opencode" });
+    assert.deepEqual(config.local?.defaults, { tool: "opencode" });
     assert.deepEqual(config.local?.extensions, {
       skills: ["personal-review"],
       prompts: ["concise-review"],

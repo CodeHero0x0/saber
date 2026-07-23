@@ -14,12 +14,12 @@ import { SaberError } from "../src/lib/errors.js";
 
 const bridge = {
   command: "node",
-  args: ["dist/cli.js", "mcp", "bridge", "--descriptor", ".saber/runtime/mcp/idea.json"],
+  args: ["tools/idea-mcp.js"],
 };
 
 const updatedBridge = {
   command: "node",
-  args: ["dist/cli.js", "mcp", "bridge", "--descriptor", ".saber/runtime/mcp/idea-v2.json"],
+  args: ["tools/idea-mcp-v2.js"],
 };
 
 function adapters(): Array<[string, ToolConfigAdapter]> {

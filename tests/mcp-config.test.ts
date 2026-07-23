@@ -49,8 +49,7 @@ test("schema v3 parses strict stdio and HTTP MCP servers with normalized default
       command: node
       args: [tools/idea/server.js]
       cwd: .
-      env:
-        IDEA_TOKEN: IDEA_MCP_TOKEN
+      env: [IDEA_MCP_TOKEN]
       tools:
         - name: inspect_project
           capability: idea.project.read
@@ -73,7 +72,7 @@ test("schema v3 parses strict stdio and HTTP MCP servers with normalized default
         command: "node",
         args: ["tools/idea/server.js"],
         cwd: ".",
-        env: { IDEA_TOKEN: "IDEA_MCP_TOKEN" },
+        env: ["IDEA_MCP_TOKEN"],
         tools: [{ name: "inspect_project", capability: "idea.project.read" }],
       },
       {
@@ -122,7 +121,7 @@ mcp:
         transport: "stdio",
         command: "node",
         args: [],
-        env: {},
+        env: [],
         tools: [{ name: "inspect_project", capability: "idea.project.read" }],
       },
     ]);
@@ -174,8 +173,10 @@ test("MCP schema rejects unsafe cwd, URL, removed auth modes, environment refere
     `id: secret-url\n      transport: http\n      url: https://user:secret@mcp.example.com\n      tools: []`,
     `id: removed-auth-none\n      transport: http\n      url: https://mcp.example.com\n      auth: none\n      tools: []`,
     `id: removed-auth-oauth\n      transport: http\n      url: https://mcp.example.com\n      auth: oauth\n      tools: []`,
-    `id: bad-env\n      transport: stdio\n      command: node\n      env:\n        TOKEN: not-an-env-name\n      tools: []`,
+    `id: bad-env\n      transport: stdio\n      command: node\n      env: [not-an-env-name]\n      tools: []`,
+    `id: repeated-env\n      transport: stdio\n      command: node\n      env: [TOKEN, TOKEN]\n      tools: []`,
     `id: unknown-capability\n      transport: stdio\n      command: node\n      tools:\n        - name: query\n          capability: custom.read`,
+    `id: native-write\n      transport: stdio\n      command: node\n      tools:\n        - name: execute\n          capability: mysql.write`,
   ];
   for (const server of invalidServers) {
     await withConfig(`${teamPrefix}mcp:\n  servers:\n    - ${server}\n`, undefined, async (root) => {

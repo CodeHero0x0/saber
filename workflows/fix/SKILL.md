@@ -1,6 +1,6 @@
 ---
 name: fix
-description: Use when a verified defect or failed quality gate must be reproduced, corrected, and handed back without losing cross-repository context.
+description: Use when a verified defect or failed quality gate must be reproduced and corrected without losing cross-repository context.
 ---
 
 # Fix workflow
@@ -9,7 +9,7 @@ description: Use when a verified defect or failed quality gate must be reproduce
 
 - QA or another responsible human supplied a reproducible defect or failed gate.
 - The affected requirement, project repository and evidence are known.
-- A responsible Dev is identified.
+- A team member is ready to diagnose and correct the defect.
 
 ## Steps
 
@@ -17,14 +17,13 @@ description: Use when a verified defect or failed quality gate must be reproduce
 2. Confirm whether the source requirement has drifted before choosing a fix.
 3. Implement the minimal safe correction in the affected project repository or repositories.
 4. Re-run the regression and relevant neighboring checks.
-5. Update the plan, test evidence and handoff with the cause, change, before/after evidence and unresolved risk.
+5. Update the plan and test evidence with the cause, change, before/after evidence and unresolved risk.
 
 ## Artifacts
 
 - Updated `workitems/<KEY>/plan.md`
 - Updated `workitems/<KEY>/tests.md`
 - Updated `workitems/<KEY>/repositories.yaml`
-- A Dev-to-QA handoff with reproduction and regression evidence
 
 ## Gate
 

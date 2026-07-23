@@ -9,7 +9,6 @@ import {
 } from "../lib/git.js";
 import { planExternalAssetUpdates, type ExternalAssetOperation } from "../lib/external-assets.js";
 import type { RepositoryConfig, ToolName } from "../lib/models.js";
-import { inspectMcpDoctor, type McpDoctorReport } from "../lib/doctor-mcp.js";
 import { validateRepositoryConfig } from "../lib/validation.js";
 
 export type DoctorCommandResult = {
@@ -46,7 +45,13 @@ export type DoctorReport = {
         }>;
       }
     | { state: "not-inspected" };
-  mcp: McpDoctorReport;
+  mcp: {
+    servers: Array<{
+      id: string;
+      state: "declared" | "not-configured";
+      environment: { declared: string[]; missing: string[] };
+    }>;
+  };
 };
 
 export type DoctorCommandDependencies = {
@@ -163,7 +168,7 @@ export async function collectDoctorReport(
       connectors: [],
       tools,
       externalAssets: { state: "not-inspected" },
-      mcp: await inspectMcpDoctor(repositoryRoot, undefined, environment),
+      mcp: { servers: [] },
     };
   }
 
@@ -185,7 +190,22 @@ export async function collectDoctorReport(
     connectors,
     tools,
     externalAssets: await inspectExternalAssets(repositoryRoot, config, externalPlanner),
-    mcp: await inspectMcpDoctor(repositoryRoot, config, environment),
+    mcp: {
+      servers: [...(config.mcp?.servers ?? []), ...(config.local?.mcp?.servers ?? [])].map((server) => {
+        const declared = server.transport === "stdio"
+          ? server.env
+          : Object.values(server.headers);
+        const uniqueDeclared = [...new Set(declared)];
+        return {
+          id: server.id,
+          state: "declared" as const,
+          environment: {
+            declared: uniqueDeclared,
+            missing: uniqueDeclared.filter((name) => !isConfiguredEnvironmentValue(environment[name])),
+          },
+        };
+      }),
+    },
   };
 }
 
@@ -224,10 +244,7 @@ function formatDoctorReport(report: DoctorReport): string {
       `- MCP ${server.id}: ${server.state}${missing.length === 0 ? "" : ` (missing env: ${missing.join(", ")})`}`,
     );
   }
-  lines.push(
-    `- MCP runtime: ${report.mcp.runtime.targets.length} target(s), transactions ${report.mcp.runtime.transactions.state}`,
-    "- MCP policy: L2 action gateway; L3 forbidden; OAuth unsupported",
-  );
+  lines.push("- MCP runtime: not provided by Saber");
   return `${lines.join("\n")}\n`;
 }
 

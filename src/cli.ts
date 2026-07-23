@@ -3,6 +3,8 @@ import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { config as loadDotenv } from "dotenv";
+
 import {
   runExternalCommand,
   type ExternalCommandDependencies,
@@ -36,17 +38,9 @@ import {
   type MaterializeCommandDependencies,
 } from "./commands/materialize.js";
 import {
-  runMcpCommand,
-  type McpCommandDependencies,
-} from "./commands/mcp.js";
-import {
   runUninstallCommand,
   type UninstallCommandDependencies,
 } from "./commands/uninstall.js";
-import {
-  runConvenienceCommand,
-  type ConvenienceCommandDependencies,
-} from "./commands/convenience.js";
 import { SaberError } from "./lib/errors.js";
 
 export type CliResult = {
@@ -57,38 +51,27 @@ export type CliResult = {
 
 const usage = `Usage: saber <command>
 
-Daily commands:
-  saber setup [--apply --confirm] [--json]
-  saber use <ba|dev|qa> [--tool <codex|claude|opencode>] [--project <name>] [--json]
-  saber demo [DEMO-101] [--json]
-  saber open <WORKITEM-KEY> [--json]
-  saber loop <WORKITEM-KEY> [--json]
-  saber next <WORKITEM-KEY> --result <result> [--summary <text>] [--risk <text>] [--next <text>] [--fingerprint <hash>] [--json]
-  saber pause <WORKITEM-KEY> --reason <text> [--json]
-  saber resume <WORKITEM-KEY> [--fingerprint <hash>] [--json]
+Member command:
+  saber init --tool <codex|claude|opencode> [--project <name>] [--json]
 
-Advanced commands:
+Internal and administrator commands:
   saber validate [--json]
   saber doctor [--json]
   saber status [--json]
-  saber init [--apply --confirm] [--json]
   saber external list [--json]
   saber external update [id] [--apply --confirm] [--json]
   saber action preview <capability> --payload <json-file> [--json]
   saber action execute <capability> --payload <json-file> [--confirm <preview-token>] [--json]
-  saber materialize [--tool <codex|claude|opencode>] --role <ba|dev|qa> [--project <name>] [--capability <id>] [--json]
+  saber materialize [--tool <codex|claude|opencode>] [--project <name>] [--capability <id>] [--json]
   saber uninstall --tool <codex|claude|opencode> [--project <name>] [--apply --confirm <preview-token>] [--json]
   saber uninstall --all [--apply --confirm <preview-token>] [--json]
-  saber mcp bridge --descriptor <path>
   saber workitem create [WORKITEM-KEY] --source-type <chat|jira|document|manual> --source-title <title> --source-file <path> [--source-origin <origin>] [--captured-at <ISO timestamp>] [--source-reference <reference>] --project <name> [--json]
-  saber workitem handoff <WORKITEM-KEY> --role <ba|dev|qa> --summary <text> --risk <text> --next <text> [--fingerprint <hash>] [--json]
   saber workitem drift <WORKITEM-KEY> --fingerprint <hash> [--json]
   saber workitem status <WORKITEM-KEY> [--json]
+  saber workitem advance <WORKITEM-KEY> --result <result> --summary <summary> --risk <risk> --next <next> [--fingerprint <hash>] [--json]
+  saber workitem pause <WORKITEM-KEY> [--reason <reason>] [--json]
+  saber workitem resume <WORKITEM-KEY> [--fingerprint <hash>] [--json]
 `;
-
-type ConvenienceCliDependencies = ConvenienceCommandDependencies & {
-  runCommand?: typeof runConvenienceCommand;
-};
 
 export type CliDependencies = {
   externalCommand?: ExternalCommandDependencies;
@@ -99,9 +82,7 @@ export type CliDependencies = {
   workitemCommand?: WorkitemCommandDependencies;
   actionCommand?: ActionCommandDependencies;
   materializeCommand?: MaterializeCommandDependencies;
-  mcpCommand?: McpCommandDependencies;
   uninstallCommand?: UninstallCommandDependencies;
-  convenienceCommand?: ConvenienceCliDependencies;
 };
 
 export async function runCli(
@@ -145,6 +126,7 @@ export async function runCli(
     });
   }
 
+
   if (command === "external") {
     return runExternalCommand(argv.slice(1), {
       cwd,
@@ -173,27 +155,12 @@ export async function runCli(
     });
   }
 
-  if (command === "mcp") {
-    return runMcpCommand(argv.slice(1), {
-      cwd,
-      dependencies: dependencies?.mcpCommand,
-    });
-  }
 
   if (command === "uninstall") {
     return runUninstallCommand(argv.slice(1), {
       cwd,
       dependencies: dependencies?.uninstallCommand,
     });
-  }
-
-  if (["setup", "use", "demo", "open", "loop", "next", "pause", "resume"].includes(command)) {
-    const convenienceDependencies = dependencies?.convenienceCommand;
-    return (convenienceDependencies?.runCommand ?? runConvenienceCommand)(
-      command,
-      argv.slice(1),
-      { cwd, dependencies: convenienceDependencies },
-    );
   }
 
   const error = new SaberError(`Unknown command: ${command}`, 2);
@@ -206,6 +173,7 @@ const isDirectExecution =
   realpathSync(fileURLToPath(import.meta.url)) === realpathSync(resolve(entrypoint));
 
 if (isDirectExecution) {
+  loadDotenv({ path: resolve(process.cwd(), ".env"), quiet: true });
   const result = await runCli(process.argv.slice(2));
 
   process.stdout.write(result.stdout);

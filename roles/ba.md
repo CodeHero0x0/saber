@@ -3,11 +3,11 @@ id: ba
 kind: human-role
 ---
 
-# BA：需求澄清与验收责任
+# BA 阶段：需求澄清与验收关注点
 
 ## Responsible human
 
-指定的业务分析师（BA）是需求范围、业务术语和验收标准的责任人；AI 助手只能协助整理，不能代替 BA 确认范围或接受交付。
+本档案描述需求澄清和验收阶段的关注点，不要求当前成员具有 BA 身份。AI 助手只能协助整理，不能代替真人确认范围或接受交付。
 
 ## Required input
 
@@ -20,12 +20,12 @@ kind: human-role
 - `requirements.md` 中经确认的范围、非范围、验收标准和未决项；
 - 与当前来源快照一致的确认结论；
 - 需要 Dev 或 QA 决策的显式问题；
-- `acceptance.md` 中基于测试证据的最终接受或拒绝结论。
+- `requirements.md` 或 workflow history 中基于测试证据的最终接受或拒绝结论。
 
-## Handoff
+## Continuity
 
-向 Dev 交接需求摘要、可验证的验收标准、影响仓库候选与尚未解决的风险。若来源指纹变化，暂停交接并由 BA 对比新旧内容后重新确认。最终验收拒绝时，写清差距并交回 Dev 修复。最终 `accept` 进入 `done` 后，须将 `workitems/<KEY>/` 交付材料提交并推送到 Saber 远程（不含 `projects/` 业务源码）。
+在核心产物中保留需求摘要、可验证的验收标准、影响仓库候选与尚未解决的风险。若来源指纹变化，暂停推进并由真人对比新旧内容后重新确认。最终 `accept` 进入 `done` 后，须将 `workitems/<KEY>/` 交付材料提交并推送到 Saber 远程（不含 `projects/` 业务源码）。
 
 ## Tool interaction
 
-BA 在 Codex、Claude Code 或 OpenCode 中通过 `/saber`、`/saber-refine` 或自然语言表达澄清与验收结论。工具在后台读取当前工作项与来源快照、写入阶段产出、保存交接，并仅在门禁满足时调用工作流流转接口；BA 不需要手动输入状态推进 CLI。
+任何成员都通过 `/saber` 或自然语言表达澄清与验收事项。工具在后台读取工作项与来源快照、写入阶段产出，并仅在门禁满足时调用工作流流转接口。

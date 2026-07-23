@@ -75,7 +75,7 @@ export function transition(state: WorkflowState, result: WorkflowResult): Workfl
 
 export function suggestedCommand(key: string, state: WorkflowState): string | null {
   if (state === "done") return null;
-  if (state === "paused") return `saber resume ${key}`;
+  if (state === "paused") return `saber workitem resume ${key}`;
   const results: Record<ActiveWorkflowState, string> = {
     "ba-clarify": "ready --fingerprint <current-fingerprint>",
     "dev-build": "ready",
@@ -83,5 +83,5 @@ export function suggestedCommand(key: string, state: WorkflowState): string | nu
     "dev-fix": "ready",
     "ba-accept": "accept --fingerprint <current-fingerprint>",
   };
-  return `saber next ${key} --result ${results[state]}`;
+  return `saber workitem advance ${key} --result ${results[state]}`;
 }

@@ -308,7 +308,7 @@ function prepareRequest(capabilityId: string, payload: unknown): PreparedHttpReq
       return gitlabCreateRequest(payload);
     default:
       throw new SaberError(
-        "this capability has no safe HTTP executor; use its native MCP tool or add an approved connector adapter",
+        "this capability has no safe HTTP executor; L0/L1 may use native MCP and L2 requires an approved connector adapter",
         3,
       );
   }

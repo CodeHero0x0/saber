@@ -1,6 +1,5 @@
 import {
   copyFile,
-  link,
   lstat,
   mkdir,
   readFile,
@@ -55,6 +54,8 @@ export type WorkflowHistoryEntry = {
   role: WorkitemRole;
   recordedAt: string;
   summary: string;
+  risk: string;
+  next: string;
 };
 
 export type WorkitemWorkflow = {
@@ -68,7 +69,7 @@ export type WorkitemWorkflow = {
 };
 
 export type WorkitemMetadata = {
-  schemaVersion: 3;
+  schemaVersion: 4;
   key: string;
   source: {
     kind: WorkitemSourceKind;
@@ -100,21 +101,6 @@ export type WorkitemCreateInput = {
   repositories: readonly WorkitemRepositoryReference[];
 };
 
-export type WorkitemHandoffInput = {
-  key: string;
-  role: WorkitemRole | string;
-  summary: string;
-  risk: string;
-  next: string;
-  now?: Date;
-};
-
-export type WorkitemHandoffRecord = {
-  path: string;
-  recordedAt: string;
-  role: WorkitemRole;
-};
-
 export type WorkitemDriftReport = {
   key: string;
   state: "current" | "paused";
@@ -135,7 +121,6 @@ export type WorkitemStatusReport = {
   fingerprint: string;
   artifacts: WorkitemArtifactState[];
   repositories: WorkitemRepositoryEvidence[];
-  handoffCount: number;
   workflow: WorkitemWorkflow;
   suggestion: string | null;
 };
@@ -169,12 +154,10 @@ export type WorkitemTransitionRecord = {
   result: WorkflowResult | "resume";
   role: WorkitemRole;
   iteration: number;
-  handoff?: string;
 };
 
 export type WorkitemPersistenceDependencies = {
   copyFile?: typeof copyFile;
-  link?: typeof link;
   lstat?: typeof lstat;
   mkdir?: typeof mkdir;
   readFile?: typeof readFile;
@@ -189,8 +172,6 @@ type WorkflowTransactionPhase =
   | "preparing"
   | "prepared"
   | "metadata-promoted"
-  | "publishing-handoff"
-  | "handoff-promoted"
   | "committed";
 
 type WorkflowTransactionManifest = {
@@ -198,7 +179,6 @@ type WorkflowTransactionManifest = {
   key: string;
   ownerPid: number;
   phase: WorkflowTransactionPhase;
-  handoffPath: string | null;
 };
 
 const requiredArtifactPaths = [
@@ -209,8 +189,6 @@ const requiredArtifactPaths = [
   "plan.md",
   "tests.md",
   "repositories.yaml",
-  "handoffs/README.md",
-  "decisions/README.md",
 ] as const;
 
 const templatePaths = [
@@ -221,8 +199,6 @@ const templatePaths = [
   "plan.md",
   "tests.md",
   "repositories.yaml",
-  "handoffs/README.md",
-  "decisions/README.md",
 ] as const;
 
 const templateDirectory = fileURLToPath(new URL("../../templates/workitem/", import.meta.url));
@@ -234,7 +210,6 @@ function persistenceFileSystem(
 ): WorkflowPersistenceFileSystem {
   return {
     copyFile: dependencies.copyFile ?? copyFile,
-    link: dependencies.link ?? link,
     lstat: dependencies.lstat ?? lstat,
     mkdir: dependencies.mkdir ?? mkdir,
     readFile: dependencies.readFile ?? readFile,
@@ -382,7 +357,7 @@ function validateShortText(label: string, value: string): string {
 
 function validateRole(role: string): WorkitemRole {
   if (!workitemRoles.includes(role as WorkitemRole)) {
-    throw new SaberError("invalid handoff role; expected ba, dev, or qa", 2);
+    throw new SaberError("invalid workflow stage role; expected ba, dev, or qa", 2);
   }
   return role as WorkitemRole;
 }
@@ -511,7 +486,7 @@ function repositoryEvidenceDiagnostic(
 
 /**
  * These fields can later affect repository navigation or be rendered in a
- * handoff. Reject unsafe paths and remotes outright rather than treating them
+ * evidence. Reject unsafe paths and remotes outright rather than treating them
  * as ordinary incomplete evidence.
  */
 function hasUnsafeRepositoryEvidence(value: unknown): boolean {
@@ -680,17 +655,14 @@ function normalizeWorkflowTransactionManifest(
 ): WorkflowTransactionManifest | undefined {
   if (
     !isRecord(value) ||
-    !hasOnlyKeys(value, ["schemaVersion", "key", "ownerPid", "phase", "handoffPath"]) ||
+    !hasOnlyKeys(value, ["schemaVersion", "key", "ownerPid", "phase"]) ||
     value.schemaVersion !== 1 ||
     value.key !== key ||
     !Number.isSafeInteger(value.ownerPid) ||
     (value.ownerPid as number) <= 0 ||
-    !["preparing", "prepared", "metadata-promoted", "publishing-handoff", "handoff-promoted", "committed"].includes(
+    !["preparing", "prepared", "metadata-promoted", "committed"].includes(
       value.phase as string,
-    ) ||
-    (value.handoffPath !== null &&
-      (typeof value.handoffPath !== "string" ||
-        !/^handoffs\/\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}\.\d{3}Z-(ba|dev|qa)(-\d+)?\.md$/u.test(value.handoffPath)))
+    )
   ) return undefined;
   return value as WorkflowTransactionManifest;
 }
@@ -745,32 +717,6 @@ function transactionMayHavePromotedMetadata(phase: WorkflowTransactionPhase): bo
   return phase !== "preparing";
 }
 
-async function removeOwnedHandoff(
-  repositoryRoot: string,
-  manifest: WorkflowTransactionManifest,
-  fileSystem: WorkflowPersistenceFileSystem,
-): Promise<void> {
-  if (manifest.handoffPath === null) return;
-  const staged = await transactionPath(repositoryRoot, manifest.key, "next-handoff.md");
-  const destination = await resolveWorkitemPath(repositoryRoot, manifest.key, manifest.handoffPath);
-  const [stagedStatus, destinationStatus] = await Promise.all([
-    lstatIfPresent(staged, fileSystem),
-    lstatIfPresent(destination, fileSystem),
-  ]);
-  if (
-    stagedStatus !== undefined &&
-    destinationStatus !== undefined &&
-    stagedStatus.isFile() &&
-    destinationStatus.isFile() &&
-    !stagedStatus.isSymbolicLink() &&
-    !destinationStatus.isSymbolicLink() &&
-    stagedStatus.dev === destinationStatus.dev &&
-    stagedStatus.ino === destinationStatus.ino
-  ) {
-    await fileSystem.rm(destination, { force: true });
-  }
-}
-
 async function rollbackWorkflowTransaction(
   repositoryRoot: string,
   manifest: WorkflowTransactionManifest,
@@ -790,7 +736,6 @@ async function rollbackWorkflowTransaction(
       await resolveWorkitemPath(repositoryRoot, manifest.key, "workitem.yaml"),
     );
   }
-  await removeOwnedHandoff(repositoryRoot, manifest, fileSystem);
   await fileSystem.rm(await transactionPath(repositoryRoot, manifest.key), {
     recursive: true,
     force: true,
@@ -859,7 +804,7 @@ function metadataFor(
   const content = validateSourceContent(input.source.content);
   const origin = validateSourceOrigin(input.source.origin);
   return {
-    schemaVersion: 3,
+    schemaVersion: 4,
     key,
     source: {
       kind: validateSourceKind(input.source.kind),
@@ -947,11 +892,6 @@ export async function createWorkitem(
     created = true;
     await assertNoSymbolicLinkComponents(repositoryRoot, workitemRootPath(key));
 
-    const handoffsPath = await resolveWorkitemPath(repositoryRoot, key, "handoffs");
-    const decisionsPath = await resolveWorkitemPath(repositoryRoot, key, "decisions");
-    await mkdir(handoffsPath);
-    await mkdir(decisionsPath);
-
     const templates = await loadTemplates();
     const metadata = metadataFor(key, input, repositories);
     const values = {
@@ -1009,13 +949,15 @@ async function nextGeneratedWorkitemKey(repositoryRoot: string, now: Date | unde
 function normalizeHistoryEntry(value: unknown): WorkflowHistoryEntry | undefined {
   if (
     !isRecord(value) ||
-    !hasOnlyKeys(value, ["from", "to", "result", "role", "recordedAt", "summary"]) ||
+    !hasOnlyKeys(value, ["from", "to", "result", "role", "recordedAt", "summary", "risk", "next"]) ||
     !isWorkflowState(value.from) ||
     !isWorkflowState(value.to) ||
     (value.result !== "resume" && !isWorkflowResult(value.result)) ||
     typeof value.role !== "string" ||
     typeof value.recordedAt !== "string" ||
-    typeof value.summary !== "string"
+    typeof value.summary !== "string" ||
+    typeof value.risk !== "string" ||
+    typeof value.next !== "string"
   ) return undefined;
   try {
     return {
@@ -1025,6 +967,8 @@ function normalizeHistoryEntry(value: unknown): WorkflowHistoryEntry | undefined
       role: validateRole(value.role),
       recordedAt: validateTimestamp(value.recordedAt)!,
       summary: validateShortText("workflow history summary", value.summary),
+      risk: validateShortText("workflow history risk", value.risk),
+      next: validateShortText("workflow history next action", value.next),
     };
   } catch {
     return undefined;
@@ -1070,7 +1014,7 @@ function normalizeMetadata(value: unknown): WorkitemMetadata | undefined {
   if (
     !isRecord(value) ||
     !hasOnlyKeys(value, ["schemaVersion", "key", "source", "repositories", "workflow"]) ||
-    value.schemaVersion !== 3 ||
+    value.schemaVersion !== 4 ||
     typeof value.key !== "string" ||
     !isRecord(value.source) ||
     !hasOnlyKeys(value.source, ["kind", "title", "origin", "snapshot", "fingerprint", "capturedAt", "references"]) ||
@@ -1102,7 +1046,7 @@ function normalizeMetadata(value: unknown): WorkitemMetadata | undefined {
     const workflow = normalizeWorkflow(value.workflow);
     if (workflow === undefined) return undefined;
     return {
-      schemaVersion: 3,
+      schemaVersion: 4,
       key,
       source: {
         kind,
@@ -1225,77 +1169,6 @@ export async function readWorkitemMetadata(
   }
 }
 
-function handoffFilename(recordedAt: string, role: WorkitemRole, sequence = 0): string {
-  const timestamp = recordedAt.replaceAll(":", "-");
-  return `${timestamp}-${role}${sequence === 0 ? "" : `-${sequence}`}.md`;
-}
-
-function renderHandoff(
-  key: string,
-  recordedAt: string,
-  role: WorkitemRole,
-  summary: string,
-  risk: string,
-  next: string,
-): string {
-  return `# Handoff — ${key}\n\n- Recorded at (UTC): \`${recordedAt}\`\n- From role: \`${role}\`\n\n## Summary\n\n${summary}\n\n## Risks / blockers\n\n${risk}\n\n## Next human action\n\n${next}\n`;
-}
-
-/** Append a compact timestamped handoff record; it deliberately never edits chat history. */
-export async function appendWorkitemHandoff(
-  repositoryRoot: string,
-  input: WorkitemHandoffInput,
-): Promise<WorkitemHandoffRecord> {
-  const key = validateWorkitemKey(input.key);
-  const role = validateRole(input.role);
-  const summary = validateShortText("handoff summary", input.summary);
-  const risk = validateShortText("handoff risk", input.risk);
-  const next = validateShortText("handoff next action", input.next);
-  await readWorkitemMetadata(repositoryRoot, key);
-
-  const handoffsPath = await resolveWorkitemPath(repositoryRoot, key, "handoffs");
-  try {
-    const status = await lstat(handoffsPath);
-    if (!status.isDirectory() || status.isSymbolicLink()) {
-      throw new SaberError(`workitem ${key} has invalid handoffs directory`, 2);
-    }
-  } catch (error: unknown) {
-    if (error instanceof SaberError) {
-      throw error;
-    }
-    if (isMissingPath(error)) {
-      throw new SaberError(`workitem ${key} is missing handoffs/README.md`, 2);
-    }
-    throw new SaberError(`could not write handoff for workitem ${key}`, 1);
-  }
-
-  const date = input.now ?? new Date();
-  if (Number.isNaN(date.getTime())) {
-    throw new SaberError("invalid handoff timestamp", 2);
-  }
-  const recordedAt = date.toISOString();
-  for (let sequence = 0; sequence < 100; sequence += 1) {
-    const filename = handoffFilename(recordedAt, role, sequence);
-    const destination = await resolveWorkitemPath(repositoryRoot, key, `handoffs/${filename}`);
-    try {
-      await writeFile(destination, renderHandoff(key, recordedAt, role, summary, risk, next), {
-        encoding: "utf8",
-        flag: "wx",
-      });
-      return { path: `handoffs/${filename}`, recordedAt, role };
-    } catch (error: unknown) {
-      if (typeof error === "object" && error !== null && "code" in error && error.code === "EEXIST") {
-        continue;
-      }
-      if (error instanceof SaberError) {
-        throw error;
-      }
-      throw new SaberError(`could not write handoff for workitem ${key}`, 1);
-    }
-  }
-  throw new SaberError(`could not append handoff for workitem ${key}; retry later`, 1);
-}
-
 function transitionDate(value: Date | undefined): string {
   const date = value ?? new Date();
   if (Number.isNaN(date.getTime())) {
@@ -1358,25 +1231,19 @@ async function persistWorkflowTransition(
   repositoryRoot: string,
   metadata: WorkitemMetadata,
   workflow: WorkitemWorkflow,
-  handoff: { role: WorkitemRole; summary: string; risk: string; next: string } | undefined,
   dependencies: WorkitemPersistenceDependencies = {},
-): Promise<string | undefined> {
+): Promise<void> {
   const fileSystem = persistenceFileSystem(dependencies);
   const metadataPath = await resolveWorkitemPath(repositoryRoot, metadata.key, "workitem.yaml");
   const transactionRoot = await transactionPath(repositoryRoot, metadata.key);
   const stagedMetadata = await transactionPath(repositoryRoot, metadata.key, "next-workitem.yaml");
   const previousMetadata = await transactionPath(repositoryRoot, metadata.key, "previous-workitem.yaml");
-  const stagedHandoff = await transactionPath(repositoryRoot, metadata.key, "next-handoff.md");
   const nextMetadata: WorkitemMetadata = { ...metadata, workflow };
-  const handoffPath = handoff === undefined
-    ? null
-    : `handoffs/${handoffFilename(workflow.updatedAt, handoff.role)}`;
   const manifest: WorkflowTransactionManifest = {
     schemaVersion: 1,
     key: metadata.key,
     ownerPid: process.pid,
     phase: "preparing",
-    handoffPath,
   };
   let transactionCreated = false;
   try {
@@ -1396,17 +1263,6 @@ async function persistWorkflowTransition(
       encoding: "utf8",
       flag: "wx",
     });
-    if (handoff !== undefined) {
-      const destination = await resolveWorkitemPath(repositoryRoot, metadata.key, handoffPath!);
-      if ((await lstatIfPresent(destination, fileSystem)) !== undefined) {
-        throw new SaberError(`workitem ${metadata.key} handoff already exists`, 2);
-      }
-      await fileSystem.writeFile(
-        stagedHandoff,
-        renderHandoff(metadata.key, workflow.updatedAt, handoff.role, handoff.summary, handoff.risk, handoff.next),
-        { encoding: "utf8", flag: "wx" },
-      );
-    }
     manifest.phase = "prepared";
     await writeWorkflowTransactionManifest(repositoryRoot, manifest, fileSystem);
 
@@ -1414,20 +1270,10 @@ async function persistWorkflowTransition(
     manifest.phase = "metadata-promoted";
     await writeWorkflowTransactionManifest(repositoryRoot, manifest, fileSystem);
 
-    if (handoffPath !== null) {
-      manifest.phase = "publishing-handoff";
-      await writeWorkflowTransactionManifest(repositoryRoot, manifest, fileSystem);
-      await fileSystem.link(
-        stagedHandoff,
-        await resolveWorkitemPath(repositoryRoot, metadata.key, handoffPath),
-      );
-      manifest.phase = "handoff-promoted";
-      await writeWorkflowTransactionManifest(repositoryRoot, manifest, fileSystem);
-    }
     manifest.phase = "committed";
     await writeWorkflowTransactionManifest(repositoryRoot, manifest, fileSystem);
     await fileSystem.rm(transactionRoot, { recursive: true, force: true });
-    return handoffPath ?? undefined;
+    return;
   } catch (error: unknown) {
     if (transactionCreated) {
       try {
@@ -1441,7 +1287,7 @@ async function persistWorkflowTransition(
   }
 }
 
-/** Advance one role-owned stage and append its compact handoff as one logical transaction. */
+/** Advance one stage and append its conclusion to workflow history. */
 export async function advanceWorkitem(
   repositoryRoot: string,
   input: AdvanceWorkitemInput,
@@ -1475,16 +1321,11 @@ export async function advanceWorkitem(
     updatedAt: recordedAt,
     history: [
       ...metadata.workflow.history,
-      { from, to, result: input.result, role, recordedAt, summary },
+      { from, to, result: input.result, role, recordedAt, summary, risk, next },
     ],
   };
-  const handoff = await persistWorkflowTransition(repositoryRoot, metadata, workflow, {
-    role,
-    summary,
-    risk,
-    next,
-  }, dependencies);
-  return { key: metadata.key, from, to, result: input.result, role, iteration, handoff };
+  await persistWorkflowTransition(repositoryRoot, metadata, workflow, dependencies);
+  return { key: metadata.key, from, to, result: input.result, role, iteration };
 }
 
 export async function pauseWorkitem(
@@ -1514,9 +1355,11 @@ export async function pauseWorkitem(
       role,
       recordedAt,
       summary: reason,
+      risk: reason,
+      next: "Resolve the pause reason, then resume the workitem.",
     }],
   };
-  await persistWorkflowTransition(repositoryRoot, metadata, workflow, undefined, dependencies);
+  await persistWorkflowTransition(repositoryRoot, metadata, workflow, dependencies);
   return { key: metadata.key, from, to: "paused", result: "paused", role, iteration: workflow.iteration };
 }
 
@@ -1548,9 +1391,11 @@ export async function resumeWorkitem(
       role,
       recordedAt,
       summary,
+      risk: "No new risk recorded while resuming.",
+      next: `Continue workflow state ${to}.`,
     }],
   };
-  await persistWorkflowTransition(repositoryRoot, metadata, workflow, undefined, dependencies);
+  await persistWorkflowTransition(repositoryRoot, metadata, workflow, dependencies);
   return { key: metadata.key, from: "paused", to, result: "resume", role, iteration: workflow.iteration };
 }
 
@@ -1583,23 +1428,6 @@ async function artifactState(
   }
 }
 
-async function countHandoffs(repositoryRoot: string, key: string): Promise<number> {
-  try {
-    const handoffsPath = await resolveWorkitemPath(repositoryRoot, key, "handoffs");
-    const entries = await readdir(handoffsPath, { withFileTypes: true, encoding: "utf8" });
-    return entries.filter(
-      (entry) =>
-        entry.isFile() &&
-        entry.name !== "README.md" &&
-        /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}\.\d{3}Z-(ba|dev|qa)(-\d+)?\.md$/u.test(
-          entry.name,
-        ),
-    ).length;
-  } catch {
-    return 0;
-  }
-}
-
 /** Report only defined evidence artifacts and repository references, never chat history. */
 export async function getWorkitemStatus(
   repositoryRoot: string,
@@ -1618,7 +1446,6 @@ export async function getWorkitemStatus(
       artifact.path === "repositories.yaml" ? repositoryEvidence.artifact : artifact,
     ),
     repositories: repositoryEvidence.repositories,
-    handoffCount: await countHandoffs(repositoryRoot, metadata.key),
     workflow: metadata.workflow,
     suggestion: suggestedCommand(metadata.key, metadata.workflow.state),
   };
