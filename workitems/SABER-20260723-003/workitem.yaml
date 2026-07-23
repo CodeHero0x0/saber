@@ -12,12 +12,12 @@ repositories:
   - name: backend
     path: projects/backend
 workflow:
-  state: dev-build
-  role: dev
+  state: done
+  role: null
   iteration: 0
   pausedFrom: null
   pauseReason: null
-  updatedAt: 2026-07-23T04:33:57.855Z
+  updatedAt: 2026-07-23T04:37:09.540Z
   history:
     - from: ba-clarify
       to: dev-build
@@ -25,3 +25,21 @@ workflow:
       role: ba
       recordedAt: 2026-07-23T04:33:57.855Z
       summary: BA 已确认关闭项须推送 workitems 交付材料到 Saber，并补推 001/002。
+    - from: dev-build
+      to: qa-verify
+      result: ready
+      role: dev
+      recordedAt: 2026-07-23T04:36:15.096Z
+      summary: Dev 已将 001/002/003 证据包与关闭推送约定提交并推送到 origin/main（8be869b）。
+    - from: qa-verify
+      to: ba-accept
+      result: pass
+      role: qa
+      recordedAt: 2026-07-23T04:36:54.970Z
+      summary: QA 确认两条验收标准均通过：远程 workitems 含 001/002，关闭推送约定已写入文档；指纹 current。
+    - from: ba-accept
+      to: done
+      result: accept
+      role: ba
+      recordedAt: 2026-07-23T04:37:09.540Z
+      summary: BA 已依据确认范围与 QA 证据接受交付：关闭推送约定生效，001/002 已在远程。
