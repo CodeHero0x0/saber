@@ -1,0 +1,33 @@
+{
+  "name": "@codehero0x0/saber",
+  "version": "0.1.1",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "saber": "./dist/main.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "tsx --test tests/*.test.ts",
+    "saber": "tsx src/main.ts",
+    "build:binary": "node scripts/build-sea.mjs",
+    "smoke:binary": "node scripts/smoke-sea.mjs"
+  },
+  "dependencies": {
+    "dotenv": "^17.4.2",
+    "jsonc-parser": "^3.3.1",
+    "smol-toml": "^1.7.0",
+    "yaml": "^2.5.1",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.1",
+    "esbuild": "^0.25.12",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}

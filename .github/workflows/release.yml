@@ -1,0 +1,98 @@
+name: Release binary
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing vX.Y.Z tag to build and publish
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            target: darwin-arm64
+          - os: ubuntu-22.04
+            target: linux-x64
+          - os: windows-2022
+            target: windows-x64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag && format('refs/tags/{0}', inputs.tag) || github.ref }}
+          fetch-depth: 0
+      - name: Verify selected release tag
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git show-ref --verify --quiet "refs/tags/$TAG"
+          test "$(git rev-parse HEAD)" = "$(git rev-parse "refs/tags/$TAG^{}")"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 25
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - run: npm test
+      - run: npm run build
+      - name: Build native binary
+        env:
+          SABER_RELEASE_TARGET: ${{ matrix.target }}
+          SABER_RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: node scripts/build-sea.mjs
+      - name: Smoke test native binary
+        run: node scripts/smoke-sea.mjs release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: saber-${{ matrix.target }}
+          path: release/
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag && format('refs/tags/{0}', inputs.tag) || github.ref }}
+      - uses: actions/download-artifact@v4
+        with:
+          path: release
+          merge-multiple: true
+      - name: Create release and upload verified binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected=(
+            "saber-${TAG}-darwin-arm64"
+            "saber-${TAG}-linux-x64"
+            "saber-${TAG}-windows-x64.exe"
+          )
+          for asset in "${expected[@]}"; do
+            test -f "release/$asset"
+            test -f "release/$asset.sha256"
+          done
+          test "$(find release -maxdepth 1 -type f -name 'saber-*' ! -name '*.sha256' | wc -l | tr -d ' ')" = "${#expected[@]}"
+          find release -type f -name '*.sha256' -print0 | sort -z | xargs -0 cat > release/checksums.txt
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --title "Saber $TAG" --generate-notes
+          mapfile -t assets < <(find release -type f -name 'saber-*' ! -name '*.sha256' -print | sort)
+          gh release upload "$TAG" "${assets[@]}" release/checksums.txt --clobber
