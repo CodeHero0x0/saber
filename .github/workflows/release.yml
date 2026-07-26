@@ -95,7 +95,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "v$(node -p \"require('./package.json').version\")" = "$TAG"
+          package_version="$(node -p "require('./package.json').version")"
+          test "v${package_version}" = "$TAG"
           if [[ "$TAG" == *-* ]]; then
             npm publish --tag next --provenance --access public
           else
