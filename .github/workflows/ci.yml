@@ -20,4 +20,11 @@ jobs:
       - run: npm run check
       - run: npm test
       - run: npm run build
-      - run: node dist/main.js validate --json
+      - name: Validate an initialized team workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          workspace="$(mktemp -d)"
+          cd "$workspace"
+          node "$GITHUB_WORKSPACE/dist/main.js" init --json
+          node "$GITHUB_WORKSPACE/dist/main.js" validate --json
