@@ -16,12 +16,6 @@ Use this skill before writing a multi-step plan when uncertainty could change th
 
 ## Saber 路由交接
 
-`/saber` 在用户明确要求质疑需求、方案、边界或风险时可路由到本技能。以当前工作项
-`requirements.md`、`plan.md` 与用户输入为依据，只追问会改变目标、范围、验收、风险或
-责任的问题。结束时将已确认结论、仍未决风险和下一步写回相应工作项文件；不代替用户
-确认范围或授权外部写入。
-
-## 可复用资产
-
-- 用[计划追问问题库](references/question-bank.md)选择与当前不确定性相关的问题，不把问题清单当成机械问卷。
-- 将已确认的结论、替代方案和风险写入[决策记录模板](templates/decision-record.md)，再交给下一位责任人。
+`/saber` 在用户明确要求质疑需求、方案、边界或风险时可路由到本技能。以当前
+`workitems/<ID>.md` 与用户输入为依据，只追问会改变目标、范围、验收、风险或责任的问题。结束时将
+已确认结论、替代方案与未决风险写回该工作项正文的设计或风险部分；不代替用户确认范围或授权外部写入。

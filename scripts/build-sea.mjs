@@ -11,6 +11,7 @@ const repositoryRoot = resolve(scriptDirectory, "..");
 
 /** Keep this list aligned with src/lib/default-assets.ts. SEA keys are workspace-relative paths. */
 export const releaseAssetPaths = [
+  "package.json",
   ".env.example", ".gitignore", "AGENTS.md", "CLAUDE.md", "saber.local.example.yaml", "saber.yaml",
   "templates/workitem/workitem.md",
   "skills/grill-me/SKILL.md", "skills/grill-with-docs/SKILL.md", "skills/openspec/SKILL.md",

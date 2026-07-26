@@ -3,7 +3,9 @@ import { lstat, readdir } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
 
 import { parseBooleanArguments } from "../lib/argv.js";
+import { builtinSkillIds } from "../lib/builtin-skills.js";
 import { loadRepositoryConfig } from "../lib/config.js";
+import { readSaberVersion } from "../lib/default-assets.js";
 import { SaberError } from "../lib/errors.js";
 import {
   readTextWithinRoot,
@@ -29,8 +31,6 @@ export type ValidateCommandDependencies = {
   loadConfig?: (repositoryRoot: string) => Promise<RepositoryConfig>;
   validateAssets?: (repositoryRoot: string) => Promise<string[]>;
 };
-
-type AssetDirectory = "skills";
 
 const requiredSkillPackages = [
   "grill-me",
@@ -124,7 +124,7 @@ async function isRegularFileWithinRoot(
 
 async function listAssetDirectory(
   repositoryRoot: string,
-  directory: AssetDirectory,
+  directory: string,
   errors: string[],
 ): Promise<Dirent<string>[] | undefined> {
   try {
@@ -252,7 +252,7 @@ async function validatePackageTree(
 
 async function validateSkillPackage(
   repositoryRoot: string,
-  directory: "skills",
+  directory: string,
   packageName: string,
   errors: string[],
 ): Promise<void> {
@@ -266,24 +266,66 @@ async function validateSkillPackage(
   await validatePackageTree(repositoryRoot, packageRoot, errors);
 }
 
+/** Prefer the versioned runtime source in a team workspace, but retain source-tree validation for Saber development. */
+async function builtinSkillDirectory(repositoryRoot: string): Promise<string> {
+  const version = await readSaberVersion();
+  const runtime = `.saber/runtime/builtin-skills/${version}/skills`;
+  return await isRegularFileWithinRoot(repositoryRoot, `${runtime}/saber/SKILL.md`) ? runtime : "skills";
+}
+
+async function listOptionalAssetDirectory(
+  repositoryRoot: string,
+  directory: string,
+  errors: string[],
+): Promise<Dirent<string>[] | undefined> {
+  try {
+    if (await hasSymbolicLinkComponent(repositoryRoot, directory)) {
+      errors.push(`${directory} must not contain a symbolic link`);
+      return undefined;
+    }
+    const path = await resolveExistingPathWithinRoot(repositoryRoot, directory);
+    if (!(await lstat(path)).isDirectory()) {
+      errors.push(`${directory} must be a directory`);
+      return undefined;
+    }
+    return await readdir(path, { withFileTypes: true, encoding: "utf8" });
+  } catch (error: unknown) {
+    if (isMissingPath(error) || error instanceof SaberError) return undefined;
+    errors.push(`could not inspect asset directory ${directory}`);
+    return undefined;
+  }
+}
+
 /** Verify framework-owned skill contracts without following symbolic links. */
 export async function validateRepositoryAssets(repositoryRoot: string): Promise<string[]> {
   const errors: string[] = [];
-  const skills = await listAssetDirectory(repositoryRoot, "skills", errors);
+  const builtinDirectory = await builtinSkillDirectory(repositoryRoot);
+  const skills = await listAssetDirectory(repositoryRoot, builtinDirectory, errors);
 
   if (skills !== undefined) {
     const names = new Set(skills.filter((entry) => entry.isDirectory()).map((entry) => entry.name));
     for (const skill of requiredSkillPackages) {
       if (!names.has(skill)) {
-        errors.push(`missing asset package skills/${skill}`);
+        errors.push(`missing asset package ${builtinDirectory}/${skill}`);
       } else {
-        await validateSkillPackage(repositoryRoot, "skills", skill, errors);
+        await validateSkillPackage(repositoryRoot, builtinDirectory, skill, errors);
       }
     }
     for (const skill of skills) {
       if (skill.isSymbolicLink()) {
-        errors.push(`skills/${skill.name} must not be a symbolic link`);
+        errors.push(`${builtinDirectory}/${skill.name} must not be a symbolic link`);
       } else if (skill.isDirectory() && !requiredSkillPackageNames.includes(skill.name)) {
+        await validateSkillPackage(repositoryRoot, builtinDirectory, skill.name, errors);
+      }
+    }
+  }
+
+  if (builtinDirectory !== "skills") {
+    const teamSkills = await listOptionalAssetDirectory(repositoryRoot, "skills", errors);
+    for (const skill of teamSkills ?? []) {
+      if (skill.isSymbolicLink()) {
+        errors.push(`skills/${skill.name} must not be a symbolic link`);
+      } else if (skill.isDirectory()) {
         await validateSkillPackage(repositoryRoot, "skills", skill.name, errors);
       }
     }
@@ -298,9 +340,11 @@ export async function validateSkillSetAssetReferences(
   skills: readonly string[],
 ): Promise<string[]> {
   const errors: string[] = [];
+  const builtinDirectory = await builtinSkillDirectory(repositoryRoot);
   for (const skill of skills) {
-    if (!safeAssetId.test(skill) || !(await isRegularFileWithinRoot(repositoryRoot, `skills/${skill}/SKILL.md`))) {
-      errors.push(`skill set references missing team skill skills/${skill}/SKILL.md`);
+    const directory = builtinSkillIds.includes(skill) ? builtinDirectory : "skills";
+    if (!safeAssetId.test(skill) || !(await isRegularFileWithinRoot(repositoryRoot, `${directory}/${skill}/SKILL.md`))) {
+      errors.push(`skill set references missing team skill ${directory}/${skill}/SKILL.md`);
     }
   }
   return errors;

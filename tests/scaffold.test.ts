@@ -1,17 +1,18 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 
 import { runCli } from "../src/cli.js";
-import { defaultAssetPaths } from "../src/lib/default-assets.js";
+import { builtinSkillIds, ensureBuiltinSkills } from "../src/lib/builtin-skills.js";
+import { workspaceDefaultAssetPaths } from "../src/lib/default-assets.js";
 
 test("init without a tool creates a non-overwriting blank team workspace", async () => {
   const root = await mkdtemp(join(tmpdir(), "saber-scaffold-"));
   try {
     const preserved = new Map<string, string>();
-    for (const path of [...defaultAssetPaths, ".env", "saber.local.yaml"]) {
+    for (const path of [...workspaceDefaultAssetPaths, ".env", "saber.local.yaml"]) {
       const content = `customer-maintained:${path}\n`;
       preserved.set(path, content);
       await mkdir(dirname(join(root, path)), { recursive: true });
@@ -28,6 +29,25 @@ test("init without a tool creates a non-overwriting blank team workspace", async
       assert.equal(await readFile(join(root, path), "utf8"), content, path);
     }
     assert.equal(await readFile(join(root, "customer-sources/index.yaml"), "utf8"), "schemaVersion: 1\nsources: []\n");
+    assert.equal(await lstat(join(root, "skills")).catch(() => undefined), undefined);
+    const builtins = await ensureBuiltinSkills(root);
+    for (const id of builtinSkillIds) {
+      assert.match(await readFile(join(root, builtins.rootPath, id, "SKILL.md"), "utf8"), /^---/u);
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("managed built-in skills fail closed when locally modified", async () => {
+  const root = await mkdtemp(join(tmpdir(), "saber-builtin-skills-"));
+  try {
+    const builtins = await ensureBuiltinSkills(root);
+    await writeFile(join(root, builtins.rootPath, "saber", "SKILL.md"), "locally modified\n", "utf8");
+    await assert.rejects(
+      () => ensureBuiltinSkills(root),
+      /managed built-in skill was modified: saber/u,
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }

@@ -28,7 +28,9 @@ try {
   const { stdout } = await run(binary, ["init", "--json"], { cwd: workspace });
   const report = JSON.parse(stdout);
   if (report.ok !== true || report.initializedTool !== null) throw new Error("binary did not scaffold a workspace");
-  for (const path of ["AGENTS.md", "CLAUDE.md", "saber.yaml", ".env", "saber.local.yaml", "skills/saber/SKILL.md"]) await access(join(workspace, path));
+  const packageJson = JSON.parse(await readFile(join(repositoryRoot, "package.json"), "utf8"));
+  for (const path of ["AGENTS.md", "CLAUDE.md", "saber.yaml", ".env", "saber.local.yaml"]) await access(join(workspace, path));
+  await access(join(workspace, ".saber", "runtime", "builtin-skills", packageJson.version, "skills", "saber", "SKILL.md"));
   if (!(await readFile(join(workspace, "customer-sources/index.yaml"), "utf8")).includes("sources: []")) throw new Error("binary wrote a non-empty customer source index");
 } finally {
   await rm(workspace, { recursive: true, force: true });

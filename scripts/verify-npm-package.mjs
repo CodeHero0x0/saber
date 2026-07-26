@@ -18,6 +18,8 @@ const runtimeAssets = [
   "skills/saber/SKILL.md", "skills/saber-grill/SKILL.md", "skills/saber-grill-with-docs/SKILL.md",
   "skills/saber-openspec/SKILL.md", "skills/saber-superpower/SKILL.md", "skills/superpowers/SKILL.md",
 ];
+const workspaceAssets = runtimeAssets.filter((path) => !path.startsWith("skills/"));
+const builtinSkillAssets = runtimeAssets.filter((path) => path.startsWith("skills/"));
 
 const packageJson = JSON.parse(await readFile(join(repositoryRoot, "package.json"), "utf8"));
 const temporaryRoot = await mkdtemp(join(tmpdir(), "saber-npm-package-"));
@@ -48,7 +50,10 @@ try {
   const { stdout: initOutput } = await run(process.execPath, [executable, "init", "--json"], { cwd: workspace });
   const report = JSON.parse(initOutput);
   assert.equal(report.ok, true, "installed npm package could not initialize a workspace");
-  for (const path of runtimeAssets) await access(join(workspace, path));
+  for (const path of workspaceAssets) await access(join(workspace, path));
+  for (const path of builtinSkillAssets) {
+    await access(join(workspace, ".saber", "runtime", "builtin-skills", packageJson.version, path));
+  }
 } finally {
   if (tarball !== undefined) await rm(tarball, { force: true });
   await rm(temporaryRoot, { recursive: true, force: true });

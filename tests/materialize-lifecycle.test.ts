@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, readlink, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -69,7 +69,12 @@ test("all supported tools receive the Saber root command set and shared skill se
       assert.deepEqual(result.externalSkills, ["vendor/router-helper"]);
       assert.equal(result.projections.some(({ name }) => name.includes("workflow")), false);
       for (const command of result.coreCommands) {
-        assert.equal(await lstat(join(root, result.discoveryRoot, `saber--core-command--${command}`)).then((status) => status.isSymbolicLink()), true);
+        const projection = result.projections.find(({ name }) => name === `saber--core-command--${command}`);
+        assert.ok(projection);
+        assert.match(projection.sourcePath, /^\.saber\/runtime\/builtin-skills\/\d+\.\d+\.\d+\/skills\//u);
+        const path = join(root, result.discoveryRoot, `saber--core-command--${command}`);
+        assert.equal(await lstat(path).then((status) => status.isSymbolicLink()), true);
+        assert.equal(await readlink(path), projection.linkTarget);
       }
     }
   } finally { await rm(root, { recursive: true, force: true }); }

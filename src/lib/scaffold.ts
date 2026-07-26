@@ -1,7 +1,8 @@
 import { lstat, mkdir, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 
-import { defaultAssetPaths, readDefaultAsset, type DefaultAssetPath } from "./default-assets.js";
+import { ensureBuiltinSkills } from "./builtin-skills.js";
+import { readDefaultAsset, type DefaultAssetPath, workspaceDefaultAssetPaths } from "./default-assets.js";
 import { SaberError } from "./errors.js";
 import { resolveWithinRoot } from "./files.js";
 
@@ -41,10 +42,11 @@ export async function scaffoldWorkspace(root: string): Promise<ScaffoldResult> {
   const result: ScaffoldResult = { created: [], existing: [] };
   try {
     for (const directory of ["projects", "workitems", ".saber"]) await mkdir(resolveWithinRoot(root, directory), { recursive: true });
-    for (const path of defaultAssetPaths) await writeIfMissing(root, path, await readDefaultAsset(path), result);
+    for (const path of workspaceDefaultAssetPaths) await writeIfMissing(root, path, await readDefaultAsset(path), result);
     await writeIfMissing(root, ".env", await readDefaultAsset(".env.example"), result);
     await writeIfMissing(root, "saber.local.yaml", await readDefaultAsset("saber.local.example.yaml"), result);
     for (const [path, content] of Object.entries(emptyAssets)) await writeIfMissing(root, path, content, result);
+    await ensureBuiltinSkills(root);
     return result;
   } catch (error: unknown) {
     if (error instanceof SaberError) throw error;

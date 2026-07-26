@@ -16,6 +16,7 @@ import { dirname, join, relative, resolve } from "node:path";
 
 import { parse } from "yaml";
 
+import { builtinSkillIds, ensureBuiltinSkills } from "./builtin-skills.js";
 import { SaberError } from "./errors.js";
 import { resolveExistingPathWithinRoot, resolveWithinRoot } from "./files.js";
 import { assertUntrackedRuntimeConfig } from "./git-tracking.js";
@@ -340,10 +341,12 @@ async function materializeLocked(root: string, config: RepositoryConfig, options
   const prompts = unique(config.local?.extensions.prompts ?? []);
   const personalSkills = unique(config.local?.extensions.skills ?? []);
   const capabilities = selectedCapabilities(config, options.capabilities);
+  const builtins = await ensureBuiltinSkills(root);
   const sources: Source[] = [];
-  for (const id of coreCommands) sources.push({ name: projectionName("core-command", id), kind: "core-command", path: await requireSkillDirectory(root, `skills/${id}`, `core command ${id}`) });
+  for (const id of coreCommands) sources.push({ name: projectionName("core-command", id), kind: "core-command", path: await requireSkillDirectory(root, `${builtins.rootPath}/${id}`, `core command ${id}`) });
   for (const id of unique([...teamSkills, ...personalSkills]).filter((id) => !coreCommands.includes(id as "saber"))) {
-    sources.push({ name: projectionName("team-skill", id), kind: "team-skill", path: await requireSkillDirectory(root, `skills/${id}`, `team skill ${id}`) });
+    const path = builtinSkillIds.includes(id) ? `${builtins.rootPath}/${id}` : `skills/${id}`;
+    sources.push({ name: projectionName("team-skill", id), kind: "team-skill", path: await requireSkillDirectory(root, path, `team skill ${id}`) });
   }
   for (const id of prompts) sources.push({ name: projectionName("personal-prompt", id), kind: "personal-prompt", path: await requireSkillDirectory(root, `prompts/${id}`, `personal prompt ${id}`) });
   sources.push(...await externalSources(root, externalSkills));

@@ -16,11 +16,7 @@ Do not treat blog posts, generated text or a search snippet as authority when of
 
 ## Saber 文档草稿交接
 
-`/saber` 在用户要求以权威资料验证技术主张时可路由到本技能。输入为当前工作项
-`plan.md`、待验证主张和用户选择的文档。输出需把每条结论回链到标题/URL 或路径、版本
-/日期、章节和适用限制，并将冲突与未知项写回 `plan.md`；不代替用户确认或授权外部写入。
-
-## 可复用资产
-
-- 用[证据评级准则](references/evidence-rubric.md)判断来源权威性、版本适用性和引用完整性。
-- 用[带引用决策记录模板](templates/cited-decision-record.md)将主张、证据和未决差异交接给真人负责人。
+`/saber` 在用户要求以权威资料验证技术主张时可路由到本技能。输入为当前
+`workitems/<ID>.md`、待验证主张和用户选择的文档。输出需把每条结论回链到标题、URL 或路径、版本
+或日期、章节和适用限制，并将冲突与未知项写回该工作项正文的设计、验证或风险部分；不代替用户确认
+或授权外部写入。
