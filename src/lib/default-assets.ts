@@ -27,8 +27,14 @@ export type DefaultAssetPath = (typeof defaultAssetPaths)[number];
 
 const allowed = new Set<string>(defaultAssetPaths);
 
+function sourcePath(path: DefaultAssetPath): string {
+  // npm renames a packaged root .gitignore to .npmignore. Keep the runtime template
+  // under a neutral filename so installed packages can still scaffold .gitignore.
+  return path === ".gitignore" ? "templates/default.gitignore" : path;
+}
+
 function sourceUrl(path: DefaultAssetPath): URL {
-  return new URL(`../../${path}`, import.meta.url);
+  return new URL(`../../${sourcePath(path)}`, import.meta.url);
 }
 
 /** Read a whitelisted release asset from a SEA executable or from the source checkout. */

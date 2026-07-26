@@ -1,18 +1,51 @@
 {
   "name": "@codehero0x0/saber",
-  "version": "0.1.1",
-  "private": true,
+  "version": "0.1.2",
+  "description": "A team AI development workspace scaffold.",
+  "license": "MIT",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/CodeHero0x0/saber.git"
+  },
+  "homepage": "https://github.com/CodeHero0x0/saber#readme",
+  "bugs": {
+    "url": "https://github.com/CodeHero0x0/saber/issues"
+  },
   "engines": {
     "node": ">=20"
   },
   "bin": {
     "saber": "./dist/main.js"
   },
+  "files": [
+    "dist/",
+    ".env.example",
+    "AGENTS.md",
+    "CLAUDE.md",
+    "saber.local.example.yaml",
+    "saber.yaml",
+    "templates/default.gitignore",
+    "templates/workitem/workitem.md",
+    "skills/grill-me/SKILL.md",
+    "skills/grill-with-docs/SKILL.md",
+    "skills/openspec/SKILL.md",
+    "skills/saber/SKILL.md",
+    "skills/saber-grill/SKILL.md",
+    "skills/saber-grill-with-docs/SKILL.md",
+    "skills/saber-openspec/SKILL.md",
+    "skills/saber-superpower/SKILL.md",
+    "skills/superpowers/SKILL.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "check": "tsc -p tsconfig.json --noEmit",
     "test": "tsx --test tests/*.test.ts",
+    "prepack": "npm run check && npm test && npm run build",
+    "test:package": "node scripts/verify-npm-package.mjs",
     "saber": "tsx src/main.ts",
     "build:binary": "node scripts/build-sea.mjs",
     "smoke:binary": "node scripts/smoke-sea.mjs"

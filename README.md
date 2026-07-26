@@ -21,12 +21,21 @@ Saber 是放在团队知识 Git 仓中的 AI 开发脚手架。它把默认技�
 
 从 [GitHub Releases](https://github.com/CodeHero0x0/saber/releases) 下载与系统匹配的二进制和 `checksums.txt`。当前提供 Apple Silicon macOS、Linux x64 与 Windows x64；不提供 Intel macOS。
 
-以 macOS Apple Silicon 为例，校验并放入团队知识仓：
+也可以在已安装 Node.js 20+ 的环境中使用 npm：
 
 ```bash
-grep -F "  saber-v0.1.1-darwin-arm64" checksums.txt | shasum -a 256 -c -
+npm install --global @codehero0x0/saber
+saber init
+```
+
+以 macOS Apple Silicon 为例，校验并放入团队知识仓：
+
+将下列命令中的 `<version>` 替换为所下载 Release 的版本号，例如 `0.1.2`：
+
+```bash
+grep -F "  saber-v<version>-darwin-arm64" checksums.txt | shasum -a 256 -c -
 mkdir -p bin
-mv saber-v0.1.1-darwin-arm64 bin/saber
+mv saber-v<version>-darwin-arm64 bin/saber
 chmod +x bin/saber
 ./bin/saber init
 ```

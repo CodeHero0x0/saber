@@ -79,7 +79,8 @@ test("README presents only the public Saber introduction and use path", async ()
   assert.match(readme, /为什么使用 Saber/u);
   assert.match(readme, /## 功能/u);
   assert.match(readme, /## 使用/u);
-  assert.match(readme, /saber-v0\.1\.1-darwin-arm64/u);
+  assert.match(readme, /saber-v<version>-darwin-arm64/u);
+  assert.match(readme, /npm install --global @codehero0x0\/saber/u);
   assert.match(readme, /\.\/bin\/saber init --tool codex/u);
   assert.match(readme, /业务仓中的客户规则始终优先/u);
   assert.doesNotMatch(readme, /requirements\.md|plan\.md|progress\.md|三文件工作项|--role|saber workitem (?:advance|pause|resume|drift)\b|npm run saber/u);

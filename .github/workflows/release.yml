@@ -67,6 +67,7 @@ jobs:
     runs-on: ubuntu-22.04
     permissions:
       contents: write
+      id-token: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -75,6 +76,31 @@ jobs:
         with:
           path: release
           merge-multiple: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 25
+          registry-url: https://registry.npmjs.org
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - run: npm test
+      - run: npm run build
+      - run: npm run test:package
+      - name: Publish npm package
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+          # Only needed for the first npm publication. Once npm Trusted Publishing
+          # is configured, npm uses this job's OIDC token before falling back here.
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "v$(node -p \"require('./package.json').version\")" = "$TAG"
+          if [[ "$TAG" == *-* ]]; then
+            npm publish --tag next --provenance --access public
+          else
+            npm publish --provenance --access public
+          fi
       - name: Create release and upload verified binaries
         env:
           GH_TOKEN: ${{ github.token }}

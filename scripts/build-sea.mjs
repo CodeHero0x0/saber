@@ -18,6 +18,10 @@ export const releaseAssetPaths = [
   "skills/saber-openspec/SKILL.md", "skills/saber-superpower/SKILL.md", "skills/superpowers/SKILL.md",
 ];
 
+function releaseAssetSource(path) {
+  return path === ".gitignore" ? "templates/default.gitignore" : path;
+}
+
 function releasePlatform() {
   const operatingSystem = { darwin: "darwin", linux: "linux", win32: "windows" }[process.platform];
   if (operatingSystem === undefined || !["arm64", "x64"].includes(process.arch)) {
@@ -36,7 +40,7 @@ export function seaConfiguration(main, output) {
     main,
     output,
     disableExperimentalSEAWarning: true,
-    assets: Object.fromEntries(releaseAssetPaths.map((path) => [path, join(repositoryRoot, path)])),
+    assets: Object.fromEntries(releaseAssetPaths.map((path) => [path, join(repositoryRoot, releaseAssetSource(path))])),
   };
 }
 
