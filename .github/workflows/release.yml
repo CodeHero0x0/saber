@@ -51,14 +51,16 @@ jobs:
       - name: Publish npm package
         env:
           TAG: ${{ inputs.tag || github.ref_name }}
+          # npm prefers GitHub OIDC when a Trusted Publisher is configured, and otherwise
+          # uses the existing repository secret as a migration fallback.
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
-          # npm Trusted Publishing exchanges this job's OIDC token; no NPM_TOKEN is used.
           if [[ "$TAG" == *-* ]]; then
-            npm publish --tag next --access public
+            npm publish --tag next --provenance --access public
           else
-            npm publish --access public
+            npm publish --provenance --access public
           fi
       - name: Create GitHub Release
         env:
