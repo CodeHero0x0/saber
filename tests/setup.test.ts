@@ -72,7 +72,7 @@ test("setup projects only selected skills, preserves conflicts, and cleans remov
     assert.equal(await realpath(managedGrill), await realpath(join(root, ".saber", "managed", "skills", "grill-me")));
     assert.equal(await realpath(join(frontend, ".agents", "skills", "team-knowledge")), await realpath(join(root, "skills", "team-knowledge")));
     assert.equal(await readFile(join(frontend, ".agents", "skills", "tdd", "SKILL.md"), "utf8"), "# personal tdd\n");
-    assert.equal(await readlink(join(frontend, ".agents", "skills", "code-review")), "../../personal-code-review");
+    assert.equal((await readlink(join(frontend, ".agents", "skills", "code-review"))).replaceAll("\\", "/"), "../../personal-code-review");
     assert.ok((await lstat(join(frontend, "CONTEXT.md"))).isSymbolicLink());
     assert.ok((await lstat(join(frontend, "docs", "adr"))).isSymbolicLink());
     assert.ok((await lstat(join(frontend, ".saber", "work", "features"))).isDirectory());
