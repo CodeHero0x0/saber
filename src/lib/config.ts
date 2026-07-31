@@ -1,149 +1,66 @@
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+
 import { parse } from "yaml";
 
 import { SaberError } from "./errors.js";
-import { readTextWithinRoot } from "./files.js";
-import { loadLocalConfig } from "./local-config.js";
-import type { ProjectConfig, RepositoryConfig, ToolName } from "./models.js";
-import { createStandardPreset } from "./presets.js";
-import { parseMcpServers, validateRepositoryConfig } from "./validation.js";
+import type { SaberConfig, SaberProject } from "./types.js";
+
+const identifier = /^[a-z][a-z0-9-]{0,63}$/u;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function requireRecord(value: unknown, location: string): Record<string, unknown> {
-  if (!isRecord(value)) {
-    throw new SaberError(`${location} must be a YAML mapping`);
+function asString(value: unknown, label: string): string {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new SaberError(`${label} must be a non-empty string`, 2);
   }
   return value;
 }
 
-/** Reject unrecognized fields so credentials and endpoint values cannot be silently ignored. */
-function assertKnownKeys(
-  record: Record<string, unknown>,
-  location: string,
-  knownKeys: readonly string[],
-): void {
-  for (const key of Object.keys(record)) {
-    if (!knownKeys.includes(key)) {
-      throw new SaberError(`${location} contains an unknown key`);
-    }
+function parseProject(value: unknown, index: number): SaberProject {
+  if (!isRecord(value)) throw new SaberError(`projects[${index}] must be an object`, 2);
+  const name = asString(value.name, `projects[${index}].name`);
+  const path = asString(value.path, `projects[${index}].path`);
+  if (!identifier.test(name)) throw new SaberError(`projects[${index}].name must be a lowercase identifier`, 2);
+  if (path !== `projects/${name}`) {
+    throw new SaberError(`projects[${index}].path must equal projects/${name}`, 2);
   }
+  return { name, path };
 }
 
-function requireString(value: unknown, location: string): string {
-  if (typeof value !== "string" || value.length === 0) {
-    throw new SaberError(`${location} must be a non-empty string`);
-  }
-  return value;
-}
-
-function optionalStringArray(value: unknown, location: string): string[] | undefined {
-  if (value === undefined) return undefined;
-  if (!Array.isArray(value)) {
-    throw new SaberError(`${location} must be a list of strings`);
-  }
-  return value.map((item, index) => requireString(item, `${location}[${index}]`));
-}
-
-function parseToolName(value: unknown, location: string): ToolName {
-  if (value === "codex" || value === "claude" || value === "opencode") {
-    return value;
-  }
-  throw new SaberError(`${location} must be one of codex, claude, opencode`);
-}
-
-function parseYaml(text: string): unknown {
+/** Load the intentionally small, shared Saber configuration. */
+export async function loadSaberConfig(root: string): Promise<SaberConfig> {
+  let raw: unknown;
   try {
-    return parse(text);
+    raw = parse(await readFile(join(root, "saber.yaml"), "utf8"));
+  } catch (error: unknown) {
+    if (error instanceof SaberError) throw error;
+    throw new SaberError("saber setup must run from a Saber root containing saber.yaml", 2);
+  }
+
+  if (!isRecord(raw)) throw new SaberError("saber.yaml must be an object", 2);
+  if (raw.schemaVersion !== 1) throw new SaberError("saber.yaml schemaVersion must be 1", 2);
+  if (!Array.isArray(raw.projects)) throw new SaberError("saber.yaml projects must be an array", 2);
+  const projects = raw.projects.map(parseProject);
+  if (new Set(projects.map(({ name }) => name)).size !== projects.length) {
+    throw new SaberError("saber.yaml project names must be unique", 2);
+  }
+
+  if (!isRecord(raw.skills)) throw new SaberError("saber.yaml skills must be an object", 2);
+  const source = asString(raw.skills.source, "saber.yaml skills.source");
+  try {
+    const url = new URL(source);
+    if (url.protocol !== "https:") throw new Error();
   } catch {
-    // YAML parser messages may reproduce source text. Do not echo configuration values.
-    throw new SaberError("could not parse saber.yaml");
+    throw new SaberError("saber.yaml skills.source must be an https URL", 2);
   }
-}
-
-function parseProject(value: unknown, index: number): ProjectConfig {
-  const location = `saber.yaml.workspace.projects[${index}]`;
-  const record = requireRecord(value, location);
-  assertKnownKeys(record, location, ["name", "path"]);
-  return {
-    name: requireString(record.name, `${location}.name`),
-    path: requireString(record.path, `${location}.path`),
-  };
-}
-
-function parseTeamConfig(root: Record<string, unknown>): RepositoryConfig {
-  assertKnownKeys(root, "saber.yaml", [
-    "schemaVersion",
-    "name",
-    "workspace",
-    "externalSkills",
-    "mcp",
-  ]);
-  const workspace = requireRecord(root.workspace, "saber.yaml.workspace");
-  assertKnownKeys(workspace, "saber.yaml.workspace", ["tools", "projects"]);
-  if (!Array.isArray(workspace.projects)) {
-    throw new SaberError("saber.yaml.workspace.projects must be a list");
+  if (!Array.isArray(raw.skills.include) || !raw.skills.include.every((item) => typeof item === "string" && identifier.test(item))) {
+    throw new SaberError("saber.yaml skills.include must contain lowercase skill identifiers", 2);
   }
+  const include = [...raw.skills.include];
+  if (new Set(include).size !== include.length) throw new SaberError("saber.yaml skills.include must not contain duplicates", 2);
 
-  const preset = createStandardPreset();
-  preset.saber.name = requireString(root.name, "saber.yaml.name");
-  preset.workspace.projects = workspace.projects.map((project, index) =>
-    parseProject(project, index),
-  );
-
-  if (workspace.tools !== undefined) {
-    const tools = requireRecord(workspace.tools, "saber.yaml.workspace.tools");
-    assertKnownKeys(tools, "saber.yaml.workspace.tools", ["default"]);
-    if (tools.default !== undefined) {
-      preset.workspace.tools.default = parseToolName(
-        tools.default,
-        "saber.yaml.workspace.tools.default",
-      );
-    }
-  }
-
-  const externalSkills = requireRecord(root.externalSkills, "saber.yaml.externalSkills");
-  assertKnownKeys(externalSkills, "saber.yaml.externalSkills", ["preset"]);
-  if (externalSkills.preset !== "standard") {
-    throw new SaberError("saber.yaml.externalSkills.preset must be standard");
-  }
-
-  if (root.mcp !== undefined) {
-    const mcp = requireRecord(root.mcp, "saber.yaml.mcp");
-    assertKnownKeys(mcp, "saber.yaml.mcp", ["servers"]);
-    preset.mcp.servers = parseMcpServers(mcp.servers, "saber.yaml.mcp.servers");
-  }
-  return preset;
-}
-
-function assertValidResolvedConfig(config: RepositoryConfig): void {
-  if (validateRepositoryConfig(config).length > 0) {
-    // Cross-reference errors can contain user-controlled identifiers.
-    throw new SaberError("saber.yaml failed cross-configuration validation");
-  }
-}
-
-/** Load the current team schema and merge restricted member-specific preferences. */
-export async function loadRepositoryConfig(repositoryRoot: string): Promise<RepositoryConfig> {
-  const root = requireRecord(
-    parseYaml(await readTextWithinRoot(repositoryRoot, "saber.yaml")),
-    "saber.yaml",
-  );
-  if (root.schemaVersion !== 3) {
-    throw new SaberError("saber.yaml.schemaVersion must be 3");
-  }
-
-  const config = parseTeamConfig(root);
-  const local = await loadLocalConfig(repositoryRoot, config);
-  if (local.defaults.tool !== undefined) {
-    config.workspace.tools.default = local.defaults.tool;
-  }
-  for (const project of config.workspace.projects) {
-    const override = local.projects[project.name];
-    if (override !== undefined) project.repository = override.repository;
-  }
-  config.local = local;
-  assertValidResolvedConfig(config);
-  return config;
+  return { schemaVersion: 1, projects, skills: { source, include } };
 }

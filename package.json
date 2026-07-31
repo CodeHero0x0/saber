@@ -1,7 +1,7 @@
 {
   "name": "@codehero0x0/saber",
   "version": "0.1.3",
-  "description": "A team AI development workspace scaffold.",
+  "description": "Team AI skills and knowledge assets for nested business repositories.",
   "license": "MIT",
   "type": "module",
   "repository": {
@@ -20,22 +20,8 @@
   },
   "files": [
     "dist/",
-    ".env.example",
-    "AGENTS.md",
-    "CLAUDE.md",
-    "saber.local.example.yaml",
     "saber.yaml",
-    "templates/default.gitignore",
-    "templates/workitem/workitem.md",
-    "skills/grill-me/SKILL.md",
-    "skills/grill-with-docs/SKILL.md",
-    "skills/openspec/SKILL.md",
-    "skills/saber/SKILL.md",
-    "skills/saber-grill/SKILL.md",
-    "skills/saber-grill-with-docs/SKILL.md",
-    "skills/saber-openspec/SKILL.md",
-    "skills/saber-superpower/SKILL.md",
-    "skills/superpowers/SKILL.md"
+    "skills/"
   ],
   "publishConfig": {
     "access": "public"
@@ -45,21 +31,13 @@
     "check": "tsc -p tsconfig.json --noEmit",
     "test": "tsx --test tests/*.test.ts",
     "prepack": "npm run check && npm test && npm run build",
-    "test:package": "node scripts/verify-npm-package.mjs",
-    "saber": "tsx src/main.ts",
-    "build:binary": "node scripts/build-sea.mjs",
-    "smoke:binary": "node scripts/smoke-sea.mjs"
+    "saber": "tsx src/main.ts"
   },
   "dependencies": {
-    "dotenv": "^17.4.2",
-    "jsonc-parser": "^3.3.1",
-    "smol-toml": "^1.7.0",
-    "yaml": "^2.5.1",
-    "zod": "^4.4.3"
+    "yaml": "^2.5.1"
   },
   "devDependencies": {
     "@types/node": "^22.10.1",
-    "esbuild": "^0.25.12",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2"
   }

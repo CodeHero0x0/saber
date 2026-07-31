@@ -1,54 +1,20 @@
-# 团队配置只声明项目差异；安全策略、阶段资产、能力和连接器来自 standard preset。
-schemaVersion: 3
-name: Saber
+schemaVersion: 1
 
-workspace:
-  # 团队默认工具；成员可在 saber.local.yaml 中覆盖。
-  tools:
-    default: codex
-  # 业务仓保持独立 Git 仓库，克隆地址由成员本地配置。
-  projects:
-    - name: frontend
-      path: projects/frontend
-    - name: backend
-      path: projects/backend
+projects:
+  - name: frontend
+    path: projects/frontend
+  - name: backend
+    path: projects/backend
 
-# standard preset 提供团队约定的 Superpowers 与 OpenSpec 外部技能包。
-externalSkills:
-  preset: standard
-
-# 团队 MCP 只保存 AI 工具的原生安装配置。Saber 不运行或代理 MCP server。
-mcp:
-  # 团队 MySQL：通过 stdio 启动，凭证只从成员本机环境变量读取。
-  # 该包默认强制只读，并限制返回行数和查询超时。
-  servers:
-    - id: mysql-mcp
-      transport: stdio
-      command: npx
-      args:
-        - -y
-        - "@database-mcp/mysql@0.4.2"
-      env:
-        - MYSQL_HOST
-        - MYSQL_PORT
-        - MYSQL_USER
-        - MYSQL_PASSWORD
-        - MYSQL_DATABASE
-      tools:
-        - name: execute_sql
-          capability: mysql.read
-        - name: search_objects
-          capability: mysql.read
-
-  # 本地 stdio 示例：command 与 args 分开传给子进程，cwd 必须留在仓库内。
-  # - id: idea-mcp
-  #   transport: stdio
-  #   command: node
-  #   args:
-  #     - tools/idea-mcp/server.js
-  #   cwd: .
-  #   env:
-  #     - IDEA_MCP_TOKEN
-  #   tools:
-  #     - name: inspect_project
-  #       capability: idea.project.read
+skills:
+  source: https://github.com/mattpocock/skills
+  include:
+    - grill-me
+    - grilling
+    - tdd
+    - grill-with-docs
+    - to-spec
+    - to-tickets
+    - implement
+    - domain-modeling
+    - code-review

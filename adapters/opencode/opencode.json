@@ -1,7 +1,0 @@
-{
-  "managedBy": "saber",
-  "version": 1,
-  "skillsDirectory": ".opencode/skills",
-  "manifest": ".saber/runtime/materialize/opencode/root.json",
-  "notes": "Run saber init --tool opencode before starting OpenCode."
-}

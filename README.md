@@ -1,57 +1,44 @@
 # Saber
 
-Saber 是放在团队知识 Git 仓中的 AI 开发脚手架。它把默认技能、工具配置和团队约定准备好，让成员从同一处进入 AI 辅助开发，同时业务代码仍留在各自独立的项目仓。
+Saber 是团队共享的 AI Skill 与知识资产仓，不是开发流程框架、MCP 管理器或 AI 路由器。
 
-## 为什么使用 Saber
+业务代码始终位于 `projects/<name>` 下的独立 Git 仓。成员从各自业务仓打开 AI；Saber 只分发团队选定的 Skill，提供只读团队知识，并让成员在人工 review 前把可复用结论归档为本地 Saber commit。
 
-- 一条命令建立可用的团队 AI 工作区，减少每位成员重复配置。
-- 默认提供 Codex、Claude Code 与 OpenCode 的入口和 MCP 配置。
-- 团队可以持续沉淀规则、知识与工作项；AI 只在需要时读取相关内容。
-- 本机凭证保存在 `.env`，不会写进团队 Git 配置。
-- 业务仓中的客户规则始终优先，避免团队资料覆盖项目事实。
+## Setup
 
-## 功能
-
-- 初始化目录、默认技能、团队配置、工作项模板和 AI 工具指引。
-- 为 Codex、Claude Code 或 OpenCode 写入本机 MCP 配置。
-- 支持单文件工作项、知识校验与按需检索。
-- 对外部写入提供预览与确认保护。
-
-## 使用
-
-从 [GitHub Releases](https://github.com/CodeHero0x0/saber/releases) 下载与系统匹配的二进制和 `checksums.txt`。当前提供 Apple Silicon macOS、Linux x64 与 Windows x64；不提供 Intel macOS。
-
-也可以在已安装 Node.js 20+ 的环境中使用 npm：
+从 Saber 根仓运行：
 
 ```bash
-npm install --global @codehero0x0/saber
-saber init
+saber setup
 ```
 
-以 macOS Apple Silicon 为例，校验并放入团队知识仓：
+setup 会从 `mattpocock/skills` 的 `main` 直接更新 `saber.yaml` 选择的 Skill，将它们缓存在本机 Saber 根仓，并向已存在的 Codex、Claude Code、OpenCode 项目级 Skill 目录创建软链接。它不会配置 MCP、凭据、tracker、AI 工具设置或 Git remote。
 
-将下列命令中的 `<version>` 替换为所下载 Release 的版本号，例如 `0.1.2`：
+同名的成员 Skill 永不覆盖；不存在的项目或工具目录只会被报告跳过。
 
-```bash
-grep -F "  saber-v<version>-darwin-arm64" checksums.txt | shasum -a 256 -c -
-mkdir -p bin
-mv saber-v<version>-darwin-arm64 bin/saber
-chmod +x bin/saber
-./bin/saber init
-```
+## 日常使用
 
-`init` 只补充缺失的文件，不覆盖已有内容。它会生成团队配置、默认技能、AI 工具指引、空工作项与知识目录，以及本机 `.env` 和 `saber.local.yaml`。
-
-填写 `.env` 中需要的本机变量后，选择你使用的 AI 工具：
-
-```bash
-./bin/saber init --tool codex
-```
-
-随后始终从 Saber 根目录启动 AI 工具，并直接描述要完成的工作：
+在 `projects/frontend` 或 `projects/backend` 打开 AI，直接使用团队 Skill，例如：
 
 ```text
-/saber 为 PROJ-123 梳理范围、依赖和验收标准
+/grill-me
+/grill-with-docs
+/to-spec 只生成草稿，不发布
+/to-tickets 只输出拆分，不发布
+/implement
+/team-knowledge
+/promote
 ```
 
-Saber 不会替代你的业务仓或客户文档；它负责让团队的 AI 开发环境一致、可复用且更安全。
+没有 tracker 配置时，upstream Skill 的 tracker 发布能力不属于 Saber 支持范围。
+
+详细 spec、design、plan、术语和 ADR 默认保存在业务仓的本地工作区，不随业务仓提交。只有成员显式调用 `/promote` 时，AI 才会在 Saber 本地 `promote/<slug>` 分支写入经过摘要的 Requirement、Architecture 或 Knowledge 更新，并创建一个本地 commit。AI 不会 push、pull、fetch 或 merge。
+
+## 团队资产
+
+- `requirements/`：跨仓或长期业务需求。
+- `architecture/`：系统边界、跨仓契约和长期架构决策。
+- `knowledge/`：按项目或共享范围维护的当前、可验证事实。
+- `skills/`：Saber 自有的 `team-knowledge` 与 `promote` Skill。
+
+`/team-knowledge` 按需读取最多一份 Requirement、一份 Architecture 和三张 Knowledge 卡，并说明命中理由和缺口；它不做 Git 操作、知识图谱或全量上下文注入。
