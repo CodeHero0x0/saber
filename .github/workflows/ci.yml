@@ -10,9 +10,10 @@ permissions:
 jobs:
   verify:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
         with:
           node-version: 20
           cache: npm
@@ -20,11 +21,22 @@ jobs:
       - run: npm run check
       - run: npm test
       - run: npm run build
-      - name: Validate an initialized team workspace
+      - name: Verify package contents
+        run: npm pack --dry-run
+      - name: Verify live upstream skill setup
         shell: bash
         run: |
           set -euo pipefail
           workspace="$(mktemp -d)"
-          cd "$workspace"
-          node "$GITHUB_WORKSPACE/dist/main.js" init --json
-          node "$GITHUB_WORKSPACE/dist/main.js" validate --json
+          trap 'rm -rf "$workspace"' EXIT
+          cp saber.yaml "$workspace/saber.yaml"
+          mkdir -p "$workspace/projects/frontend/.agents/skills"
+          git -C "$workspace/projects/frontend" init --quiet
+          (
+            cd "$workspace"
+            node "$GITHUB_WORKSPACE/dist/main.js" setup
+          )
+          test -f "$workspace/.saber/managed/manifest.json"
+          test -L "$workspace/projects/frontend/.agents/skills/grill-me"
+          test -L "$workspace/projects/frontend/.agents/skills/team-knowledge"
+          test -L "$workspace/projects/frontend/.agents/skills/promote"

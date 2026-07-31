@@ -32,6 +32,16 @@ setup 会从 `mattpocock/skills` 的 `main` 直接更新 `saber.yaml` 选择的 
 
 没有 tracker 配置时，upstream Skill 的 tracker 发布能力不属于 Saber 支持范围。
 
+## 持续集成与发布
+
+CI 在 `main` 的推送和 Pull Request 上运行类型检查、测试、构建、包内容检查，以及一次使用上游
+`main` 内容的临时工作区 `saber setup`。
+
+发布以 `vX.Y.Z`（或预发布版本）Tag 触发。Tag 必须与 `package.json` 的版本完全一致；工作流会验证、
+发布 npm 包并创建 GitHub Release。首次发布前，在 npm 的 Trusted Publisher 中将
+`CodeHero0x0/saber` 的 `.github/workflows/release.yml` 配置为允许发布的工作流；发布不使用长期
+`NPM_TOKEN`。
+
 详细 spec、design、plan、术语和 ADR 默认保存在业务仓的本地工作区，不随业务仓提交。只有成员显式调用 `/promote` 时，AI 才会在 Saber 本地 `promote/<slug>` 分支写入经过摘要的 Requirement、Architecture 或 Knowledge 更新，并创建一个本地 commit。AI 不会 push、pull、fetch 或 merge。
 
 ## 团队资产
