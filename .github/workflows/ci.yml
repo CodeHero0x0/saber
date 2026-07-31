@@ -30,6 +30,7 @@ jobs:
           workspace="$(mktemp -d)"
           trap 'rm -rf "$workspace"' EXIT
           cp saber.yaml "$workspace/saber.yaml"
+          cp -R skills "$workspace/skills"
           mkdir -p "$workspace/projects/frontend/.agents/skills"
           git -C "$workspace/projects/frontend" init --quiet
           (
