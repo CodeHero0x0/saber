@@ -6,11 +6,15 @@ import test from "node:test";
 const root = process.cwd();
 
 test("release keeps native artifacts and OIDC-only npm publishing", async () => {
-  const packageJson = JSON.parse(await readFile(join(root, "package.json"), "utf8")) as { scripts?: Record<string, string> };
+  const packageJson = JSON.parse(await readFile(join(root, "package.json"), "utf8")) as {
+    bin?: Record<string, string>;
+    scripts?: Record<string, string>;
+  };
   const workflow = await readFile(join(root, ".github", "workflows", "release.yml"), "utf8");
 
   assert.equal(packageJson.scripts?.["build:binary"], "node scripts/build-sea.mjs");
   assert.equal(packageJson.scripts?.["smoke:binary"], "node scripts/smoke-sea.mjs");
+  assert.equal(packageJson.bin?.saber, "dist/main.js");
   assert.match(workflow, /target: darwin-arm64/u);
   assert.match(workflow, /target: linux-x64/u);
   assert.match(workflow, /target: windows-x64/u);
@@ -18,4 +22,5 @@ test("release keeps native artifacts and OIDC-only npm publishing", async () => 
   assert.match(workflow, /node-version: 24/u);
   assert.match(workflow, /gh release upload/u);
   assert.doesNotMatch(workflow, /NODE_AUTH_TOKEN|NPM_TOKEN/u);
+  assert.doesNotMatch(workflow.slice(workflow.indexOf("\n  publish:")), /registry-url:/u);
 });

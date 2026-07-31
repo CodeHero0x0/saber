@@ -83,7 +83,6 @@ jobs:
         with:
           # npm Trusted Publishing requires Node >= 22.14 and npm >= 11.5.1.
           node-version: 24
-          registry-url: https://registry.npmjs.org
           package-manager-cache: false
       - name: Verify selected release tag
         env:
