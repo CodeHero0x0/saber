@@ -16,7 +16,58 @@ permissions:
   id-token: write
 
 jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            target: darwin-arm64
+          - os: ubuntu-22.04
+            target: linux-x64
+          - os: windows-2022
+            target: windows-x64
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.tag && format('refs/tags/{0}', inputs.tag) || github.ref }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 25
+          cache: npm
+      - name: Verify selected release tag
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git show-ref --verify --quiet "refs/tags/$TAG"
+          test "$(git rev-parse HEAD)" = "$(git rev-parse "refs/tags/$TAG^{}")"
+          package_version="$(node -p "require('./package.json').version")"
+          test "v${package_version}" = "$TAG"
+      - run: npm ci
+      - run: npm run check
+      - run: npm test
+      - run: npm run build
+      - name: Build native binary
+        env:
+          SABER_RELEASE_TARGET: ${{ matrix.target }}
+          SABER_RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: node scripts/build-sea.mjs
+      - name: Smoke test native binary
+        run: node scripts/smoke-sea.mjs release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: saber-${{ matrix.target }}
+          path: release/
+          if-no-files-found: error
+
   publish:
+    needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -24,6 +75,10 @@ jobs:
         with:
           ref: ${{ inputs.tag && format('refs/tags/{0}', inputs.tag) || github.ref }}
           fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          path: release
+          merge-multiple: true
       - uses: actions/setup-node@v6
         with:
           # npm Trusted Publishing requires Node >= 22.14 and npm >= 11.5.1.
@@ -40,8 +95,7 @@ jobs:
           test "$(git rev-parse HEAD)" = "$(git rev-parse "refs/tags/$TAG^{}")"
           package_version="$(node -p "require('./package.json').version")"
           test "v${package_version}" = "$TAG"
-      - name: Install dependencies
-        run: npm ci
+      - run: npm ci
       - name: Validate package
         run: |
           npm run check
@@ -51,23 +105,32 @@ jobs:
       - name: Publish npm package
         env:
           TAG: ${{ inputs.tag || github.ref_name }}
-          # npm prefers GitHub OIDC when a Trusted Publisher is configured, and otherwise
-          # uses the existing repository secret as a migration fallback.
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
           if [[ "$TAG" == *-* ]]; then
-            npm publish --tag next --provenance --access public
+            npm publish --tag next --access public
           else
-            npm publish --provenance --access public
+            npm publish --access public
           fi
-      - name: Create GitHub Release
+      - name: Create release and upload verified binaries
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.tag || github.ref_name }}
         shell: bash
         run: |
           set -euo pipefail
-          gh release view "$TAG" >/dev/null 2>&1 || \
-            gh release create "$TAG" --verify-tag --title "Saber $TAG" --generate-notes
+          expected=(
+            "saber-${TAG}-darwin-arm64"
+            "saber-${TAG}-linux-x64"
+            "saber-${TAG}-windows-x64.exe"
+          )
+          for asset in "${expected[@]}"; do
+            test -f "release/$asset"
+            test -f "release/$asset.sha256"
+          done
+          test "$(find release -maxdepth 1 -type f -name 'saber-*' ! -name '*.sha256' | wc -l | tr -d ' ')" = "${#expected[@]}"
+          find release -type f -name '*.sha256' -print0 | sort -z | xargs -0 cat > release/checksums.txt
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --verify-tag --title "Saber $TAG" --generate-notes
+          mapfile -t assets < <(find release -maxdepth 1 -type f -name 'saber-*' -print | sort)
+          gh release upload "$TAG" "${assets[@]}" release/checksums.txt --clobber

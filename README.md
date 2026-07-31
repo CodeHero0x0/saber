@@ -38,10 +38,10 @@ CI 在 `main` 的推送和 Pull Request 上运行类型检查、测试、构建�
 `main` 内容的临时工作区 `saber setup`。
 
 发布以 `vX.Y.Z`（或预发布版本）Tag 触发。Tag 必须与 `package.json` 的版本完全一致；工作流会验证、
-发布 npm 包并创建 GitHub Release。首次发布前，在 npm 的 Trusted Publisher 中将
-`CodeHero0x0/saber` 的 `.github/workflows/release.yml` 配置为允许发布的工作流。发布优先使用 OIDC；
-在该迁移完成前，Release workflow 会使用现有仓库 secret 作为兼容回退，确认 OIDC 发布成功后应移除
-`NPM_TOKEN`。
+在 macOS arm64、Linux x64 和 Windows x64 上构建并 smoke-test 独立可执行文件，发布 npm 包，并将
+三个二进制、对应 SHA-256 文件和 `checksums.txt` 上传到 GitHub Release。首次发布前，在 npm 的 Trusted
+Publisher 中将 `CodeHero0x0/saber` 的 `.github/workflows/release.yml` 配置为允许 `npm publish` 的工作流；
+Release 不使用 `NPM_TOKEN`。
 
 详细 spec、design、plan、术语和 ADR 默认保存在业务仓的本地工作区，不随业务仓提交。只有成员显式调用 `/promote` 时，AI 才会在 Saber 本地 `promote/<slug>` 分支写入经过摘要的 Requirement、Architecture 或 Knowledge 更新，并创建一个本地 commit。AI 不会 push、pull、fetch 或 merge。
 

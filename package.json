@@ -1,6 +1,6 @@
 {
   "name": "@codehero0x0/saber",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Team AI skills and knowledge assets for nested business repositories.",
   "license": "MIT",
   "type": "module",
@@ -31,13 +31,16 @@
     "check": "tsc -p tsconfig.json --noEmit",
     "test": "tsx --test tests/*.test.ts",
     "prepack": "npm run check && npm test && npm run build",
-    "saber": "tsx src/main.ts"
+    "saber": "tsx src/main.ts",
+    "build:binary": "node scripts/build-sea.mjs",
+    "smoke:binary": "node scripts/smoke-sea.mjs"
   },
   "dependencies": {
     "yaml": "^2.5.1"
   },
   "devDependencies": {
     "@types/node": "^22.10.1",
+    "esbuild": "^0.28.1",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2"
   }
