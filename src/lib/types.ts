@@ -9,6 +9,7 @@ export type ToolName = keyof typeof toolDiscoveryDirectories;
 export type SaberProject = {
   name: string;
   path: string;
+  repository?: string;
 };
 
 export type SaberConfig = {

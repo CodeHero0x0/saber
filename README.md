@@ -1,55 +1,100 @@
 # Saber
 
-Saber 是团队共享的 AI Skill 与知识资产仓，不是开发流程框架、MCP 管理器或 AI 路由器。
+Saber 是团队共享 Skills 与知识的工作区。
 
-业务代码始终位于 `projects/<name>` 下的独立 Git 仓。成员从各自业务仓打开 AI；Saber 只分发团队选定的 Skill，提供只读团队知识，并让成员在人工 review 前把可复用结论归档为本地 Saber commit。
+## 知识图谱
 
-## Setup
+```mermaid
+flowchart LR
+  R["Requirements<br/>跨仓或长期业务需求"]
+  A["Architecture<br/>系统边界与跨仓契约"]
+  K["Knowledge<br/>当前、可验证的知识"]
+  T["/team-knowledge"]
+  P["业务仓<br/>projects/project-name"]
+  M["/promote"]
 
-从 Saber 根仓运行：
+  R --> T
+  A --> T
+  K --> T
+  T --> P
+  P --> M
+  M --> R
+  M --> A
+  M --> K
+```
+
+开始非简单任务时，用 `/team-knowledge` 读取与当前任务相关的共享资产；完成并验证工作后，成员可用
+`/promote` 将可复用的结论归档到相应位置。
+
+## 快速开始
+
+前提：Node.js 20+。
+
+```bash
+mkdir team-knowledge
+cd team-knowledge
+
+# 首次执行会初始化当前目录
+npm install -g @codehero0x0/saber
+saber setup
+```
+
+目录名可以按团队习惯命名；首次 `setup` 会生成 `saber.yaml`、`requirements/`、`architecture/`、
+`knowledge/`、`skills/`、`projects/` 和运行目录，并写入默认的 Skill 列表。
+
+接着在 `saber.yaml` 配置业务仓 Git 地址：
+
+```yaml
+projects:
+  - name: frontend
+    path: projects/frontend
+    repository: git@github.com:your-org/frontend.git
+  - name: backend
+    path: projects/backend
+    repository: https://github.com/your-org/backend.git
+```
+
+再次执行 `saber setup`：缺失的项目会自动 clone 到 `projects/<name>`，并在每个项目中创建
+`.agents/skills`、`.claude/skills`、`.opencode/skills`，将团队 Skills 链接进去。
+
+## 用法
+
+### 更新团队 Skills
+
+在团队知识目录修改 `saber.yaml` 后执行：
 
 ```bash
 saber setup
 ```
 
-setup 会从 `mattpocock/skills` 的 `main` 直接更新 `saber.yaml` 选择的 Skill，将它们缓存在本机 Saber 根仓，并向已存在的 Codex、Claude Code、OpenCode 项目级 Skill 目录创建软链接。它不会配置 MCP、凭据、tracker、AI 工具设置或 Git remote。
+- `projects`：团队要接入的业务仓路径及可选的 `repository` Git 地址。
+- `skills.include`：团队要分发的上游 Skill 列表。
 
-同名的成员 Skill 永不覆盖；不存在的项目或工具目录只会被报告跳过。
+### 在业务仓中工作
 
-## 日常使用
+进入具体业务仓并打开 AI 工具，按任务需要组合以下 Skill：
 
-在 `projects/frontend` 或 `projects/backend` 打开 AI，直接使用团队 Skill，例如：
+| 场景 | Skill |
+| --- | --- |
+| 读取相关的团队需求、架构和知识 | `/team-knowledge` |
+| 追问并澄清需求或方案 | `/grill-me` |
+| 基于资料讨论方案 | `/grill-with-docs` |
+| 形成可实施的规格 | `/to-spec` |
+| 拆分工作项 | `/to-tickets` |
+| 进行实现 | `/implement` |
+| 测试驱动实现 | `/tdd` |
+| 补充或校准领域模型 | `/domain-modeling` |
+| 审查变更 | `/code-review` |
 
-```text
-/grill-me
-/grill-with-docs
-/to-spec 只生成草稿，不发布
-/to-tickets 只输出拆分，不发布
-/implement
-/team-knowledge
-/promote
-```
+例如，需求尚不清楚时可以使用 `/grill-me` 和 `/to-spec`；实现前可先调用
+`/team-knowledge`，再按需要使用 `/implement`、`/tdd` 与 `/code-review`。
 
-没有 tracker 配置时，upstream Skill 的 tracker 发布能力不属于 Saber 支持范围。
+### 沉淀团队知识
 
-## 持续集成与发布
+业务仓中的详细 spec、design、plan、`CONTEXT.md` 和 ADR 用于当前工作。需要共享的结论由成员明确发起：
 
-CI 在 `main` 的推送和 Pull Request 上运行类型检查、测试、构建、包内容检查，以及一次使用上游
-`main` 内容的临时工作区 `saber setup`。
+1. 完成并验证业务仓改动。
+2. 调用 `/promote`，将可复用结论整理为 Requirement、Architecture 或 Knowledge 摘要。
+3. 人工 review 本地 Saber commit，再由成员决定如何提交共享。
 
-发布以 `vX.Y.Z`（或预发布版本）Tag 触发。Tag 必须与 `package.json` 的版本完全一致；工作流会验证、
-在 macOS arm64、Linux x64 和 Windows x64 上构建并 smoke-test 独立可执行文件，发布 npm 包，并将
-三个二进制、对应 SHA-256 文件和 `checksums.txt` 上传到 GitHub Release。首次发布前，在 npm 的 Trusted
-Publisher 中将 `CodeHero0x0/saber` 的 `.github/workflows/release.yml` 配置为允许 `npm publish` 的工作流；
-Release 不使用 `NPM_TOKEN`。
-
-详细 spec、design、plan、术语和 ADR 默认保存在业务仓的本地工作区，不随业务仓提交。只有成员显式调用 `/promote` 时，AI 才会在 Saber 本地 `promote/<slug>` 分支写入经过摘要的 Requirement、Architecture 或 Knowledge 更新，并创建一个本地 commit。AI 不会 push、pull、fetch 或 merge。
-
-## 团队资产
-
-- `requirements/`：跨仓或长期业务需求。
-- `architecture/`：系统边界、跨仓契约和长期架构决策。
-- `knowledge/`：按项目或共享范围维护的当前、可验证事实。
-- `skills/`：Saber 自有的 `team-knowledge` 与 `promote` Skill。
-
-`/team-knowledge` 按需读取最多一份 Requirement、一份 Architecture 和三张 Knowledge 卡，并说明命中理由和缺口；它不做 Git 操作、知识图谱或全量上下文注入。
+同一主题的新证据应更新对应的当前 Knowledge 卡；历史由 Saber 仓库保留。

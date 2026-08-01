@@ -27,7 +27,8 @@ function parseProject(value: unknown, index: number): SaberProject {
   if (path !== `projects/${name}`) {
     throw new SaberError(`projects[${index}].path must equal projects/${name}`, 2);
   }
-  return { name, path };
+  const repository = value.repository === undefined ? undefined : asString(value.repository, `projects[${index}].repository`);
+  return { name, path, repository };
 }
 
 /** Load the intentionally small, shared Saber configuration. */

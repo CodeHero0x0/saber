@@ -5,14 +5,16 @@ export type SetupCommandDependencies = SetupDependencies;
 export type SetupCommandResult = { exitCode: number; stdout: string; stderr: string };
 
 function format(result: SetupResult): string {
-  const lines = ["Saber setup complete", `- skills: ${result.skills.join(", ")}`];
+  const lines = ["Saber setup complete"];
+  if (result.initialized) lines.push("- workspace: initialized");
+  lines.push(`- skills: ${result.skills.join(", ")}`);
   for (const project of result.projects) {
     if (project.status === "skipped") {
       lines.push(`- ${project.name}: skipped (${project.reason})`);
       continue;
     }
     const tools = project.tools.length === 0 ? "no supported tool directory" : project.tools.join(", ");
-    lines.push(`- ${project.name}: ${project.installed} managed links; ${tools}`);
+    lines.push(`- ${project.name}: ${project.cloned ? "cloned; " : ""}${project.installed} managed links; ${tools}`);
     if (project.removed > 0) lines.push(`  - removed: ${project.removed}`);
     for (const conflict of project.conflicts) lines.push(`  - conflict preserved: ${conflict}`);
   }

@@ -34,7 +34,7 @@ try {
 
   const { stdout } = await run(binary, ["setup"], { cwd: workspace });
   assert.match(stdout, /Saber setup complete/u);
-  assert.match(stdout, /frontend: 13 managed links/u);
+  assert.match(stdout, /frontend: 35 managed links/u);
   await access(join(workspace, ".saber", "managed", "manifest.json"));
   assert.ok((await lstat(join(project, ".agents", "skills", "grill-me"))).isSymbolicLink());
   assert.ok((await lstat(join(project, ".agents", "skills", "team-knowledge"))).isSymbolicLink());

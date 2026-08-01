@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { cp, lstat, mkdir, mkdtemp, readFile, readlink, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import { runCli } from "../src/cli.js";
 import type { UpstreamSkillSynchronizer } from "../src/lib/remote-skills.js";
@@ -11,14 +13,24 @@ const defaultSkills = [
   "grill-me", "grilling", "tdd", "grill-with-docs", "to-spec", "to-tickets",
   "implement", "domain-modeling", "code-review",
 ];
+const repositoryRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+
+type FixtureProject = string | { name: string; repository?: string };
 
 async function writeSkill(root: string, id: string): Promise<void> {
   await mkdir(join(root, id), { recursive: true });
   await writeFile(join(root, id, "SKILL.md"), `---\nname: ${id}\n---\n# ${id}\n`, "utf8");
 }
 
-async function writeConfig(root: string, include = defaultSkills, projects = ["frontend", "backend"]): Promise<void> {
-  const projectLines = projects.flatMap((name) => [`  - name: ${name}`, `    path: projects/${name}`]);
+async function writeConfig(root: string, include = defaultSkills, projects: readonly FixtureProject[] = ["frontend", "backend"]): Promise<void> {
+  const projectLines = projects.flatMap((project) => {
+    const value = typeof project === "string" ? { name: project } : project;
+    return [
+      `  - name: ${value.name}`,
+      `    path: projects/${value.name}`,
+      ...(value.repository === undefined ? [] : [`    repository: ${value.repository}`]),
+    ];
+  });
   const skillLines = include.map((id) => `    - ${id}`);
   await writeFile(join(root, "saber.yaml"), [
     "schemaVersion: 1", "projects:", ...projectLines, "skills:",
@@ -76,6 +88,9 @@ test("setup projects only selected skills, preserves conflicts, and cleans remov
     assert.ok((await lstat(join(frontend, "CONTEXT.md"))).isSymbolicLink());
     assert.ok((await lstat(join(frontend, "docs", "adr"))).isSymbolicLink());
     assert.ok((await lstat(join(frontend, ".saber", "work", "features"))).isDirectory());
+    assert.ok((await lstat(join(frontend, ".opencode", "skills", "grill-me"))).isSymbolicLink());
+    assert.ok((await lstat(join(backend, ".agents", "skills", "grill-me"))).isSymbolicLink());
+    assert.ok((await lstat(join(backend, ".claude", "skills", "grill-me"))).isSymbolicLink());
     assert.equal(await readFile(join(backend, "CONTEXT.md"), "utf8"), "# Existing context\n");
     assert.ok((await lstat(join(backend, "docs", "adr"))).isSymbolicLink());
 
@@ -96,7 +111,7 @@ test("setup projects only selected skills, preserves conflicts, and cleans remov
   }
 });
 
-test("setup skips absent configured projects and only runs at a Saber root", async () => {
+test("setup skips an absent configured project without a repository", async () => {
   const root = await mkdtemp(join(tmpdir(), "saber-vnext-root-"));
   try {
     const upstream = join(root, "fixture-upstream");
@@ -110,10 +125,51 @@ test("setup skips absent configured projects and only runs at a Saber root", asy
     const result = await runCli(["setup"], { cwd: root, dependencies });
     assert.equal(result.exitCode, 0, result.stderr);
     assert.match(result.stdout, /missing: skipped \(project directory is absent\)/u);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
-    const notRoot = await runCli(["setup"], { cwd: frontend, dependencies });
-    assert.equal(notRoot.exitCode, 2);
-    assert.match(notRoot.stderr, /Saber root/u);
+test("setup initializes an arbitrary team directory, clones configured projects, and creates tool directories", async () => {
+  const root = await mkdtemp(join(tmpdir(), "team-knowledge-"));
+  try {
+    const upstream = join(root, "fixture-upstream");
+    for (const id of defaultSkills) await writeSkill(upstream, id);
+    const dependencies = { setupCommand: { assetsRoot: repositoryRoot, syncSkills: fixtureSync(upstream) } };
+
+    const initialized = await runCli(["setup"], { cwd: root, dependencies });
+    assert.equal(initialized.exitCode, 0, initialized.stderr);
+    assert.match(initialized.stdout, /workspace: initialized/u);
+    assert.match(await readFile(join(root, "saber.yaml"), "utf8"), /projects: \[\]/u);
+    for (const directory of ["requirements", "architecture", "knowledge", "skills", "projects", ".saber"]) {
+      assert.ok((await lstat(join(root, directory))).isDirectory(), directory);
+    }
+    assert.ok((await lstat(join(root, "skills", "team-knowledge", "SKILL.md"))).isFile());
+    assert.ok((await lstat(join(root, "skills", "promote", "SKILL.md"))).isFile());
+
+    const remote = join(root, "frontend-remote.git");
+    await new Promise<void>((resolvePromise, rejectPromise) => {
+      const child = spawn("git", ["init", "--bare", remote], { stdio: "ignore" });
+      child.once("error", rejectPromise);
+      child.once("close", (code) => code === 0 ? resolvePromise() : rejectPromise(new Error("could not create fixture repository")));
+    });
+    await writeConfig(root, ["grill-me"], [{ name: "frontend", repository: remote }]);
+
+    const cloned = await runCli(["setup"], { cwd: root, dependencies });
+    assert.equal(cloned.exitCode, 0, cloned.stderr);
+    assert.match(cloned.stdout, /frontend: cloned;/u);
+    const project = join(root, "projects", "frontend");
+    assert.ok((await lstat(join(project, ".git"))).isDirectory());
+    for (const directory of [".agents/skills", ".claude/skills", ".opencode/skills"]) {
+      assert.ok((await lstat(join(project, directory, "grill-me"))).isSymbolicLink(), directory);
+    }
+    for (const directory of ["frontend", "shared", "cross-repo"]) {
+      assert.ok((await lstat(join(root, "knowledge", directory))).isDirectory(), directory);
+    }
+
+    await rm(remote, { recursive: true, force: true });
+    const repeated = await runCli(["setup"], { cwd: root, dependencies });
+    assert.equal(repeated.exitCode, 0, repeated.stderr);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

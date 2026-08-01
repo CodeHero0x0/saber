@@ -1,6 +1,8 @@
+import { spawn } from "node:child_process";
 import { lstat, mkdir, readFile, readlink, stat, symlink, unlink, writeFile } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
 
+import { bootstrapWorkspace, ensureKnowledgeDirectories } from "./bootstrap.js";
 import { loadSaberConfig } from "./config.js";
 import { SaberError } from "./errors.js";
 import { syncUpstreamSkills, type UpstreamSkillSynchronizer } from "./remote-skills.js";
@@ -12,6 +14,7 @@ type ProjectManifest = { schemaVersion: 1; links: ManagedLink[] };
 export type ProjectSetupReport = {
   name: string;
   status: "installed" | "skipped";
+  cloned: boolean;
   reason?: string;
   installed: number;
   removed: number;
@@ -20,14 +23,19 @@ export type ProjectSetupReport = {
 };
 
 export type SetupResult = {
+  initialized: boolean;
   source: string;
   skills: string[];
   projects: ProjectSetupReport[];
 };
 
+export type ProjectCloner = (repository: string, destination: string, root: string) => Promise<void>;
+
 export type SetupDependencies = {
   loadConfig?: (root: string) => Promise<SaberConfig>;
   syncSkills?: UpstreamSkillSynchronizer;
+  cloneProject?: ProjectCloner;
+  assetsRoot?: string;
 };
 
 const teamSkillIds = ["team-knowledge", "promote"] as const;
@@ -66,6 +74,18 @@ async function existsDirectory(path: string): Promise<boolean> {
 
 async function existsGitRepository(projectRoot: string): Promise<boolean> {
   return stat(join(projectRoot, ".git")).then(() => true).catch(() => false);
+}
+
+async function cloneProjectRepository(repository: string, destination: string, root: string): Promise<void> {
+  await mkdir(dirname(destination), { recursive: true });
+  await new Promise<void>((resolvePromise, rejectPromise) => {
+    const child = spawn("git", ["clone", "--", repository, destination], { cwd: root, stdio: "ignore" });
+    child.once("error", () => rejectPromise(new SaberError("could not start git while cloning a configured project", 1)));
+    child.once("close", (code) => {
+      if (code === 0) resolvePromise();
+      else rejectPromise(new SaberError("could not clone a configured project repository", 1));
+    });
+  });
 }
 
 async function lstatOptional(path: string) {
@@ -159,13 +179,19 @@ async function setupProject(
   config: SaberConfig,
   cacheDirectory: string,
   project: SaberConfig["projects"][number],
+  cloneProject: ProjectCloner,
 ): Promise<ProjectSetupReport> {
   const projectRoot = join(root, project.path);
+  let cloned = false;
   if (!(await existsDirectory(projectRoot))) {
-    return { name: project.name, status: "skipped", reason: "project directory is absent", installed: 0, removed: 0, conflicts: [], tools: [] };
+    if (project.repository === undefined) {
+      return { name: project.name, status: "skipped", cloned, reason: "project directory is absent", installed: 0, removed: 0, conflicts: [], tools: [] };
+    }
+    await cloneProject(project.repository, projectRoot, root);
+    cloned = true;
   }
   if (!(await existsGitRepository(projectRoot))) {
-    return { name: project.name, status: "skipped", reason: "project directory is not a Git repository", installed: 0, removed: 0, conflicts: [], tools: [] };
+    return { name: project.name, status: "skipped", cloned, reason: "project directory is not a Git repository", installed: 0, removed: 0, conflicts: [], tools: [] };
   }
 
   const previous = await readManifest(projectRoot);
@@ -180,7 +206,7 @@ async function setupProject(
   const tools: ToolName[] = [];
   const desiredPaths = new Set<string>();
   for (const [tool, discovery] of Object.entries(toolDiscoveryDirectories) as Array<[ToolName, string]>) {
-    if (!(await existsDirectory(join(projectRoot, discovery)))) continue;
+    await mkdir(join(projectRoot, discovery), { recursive: true });
     tools.push(tool);
     for (const id of sources.keys()) desiredPaths.add(normalize(join(discovery, id)));
   }
@@ -218,14 +244,17 @@ async function setupProject(
     ...links.map((link) => link.path),
   ]);
 
-  return { name: project.name, status: "installed", installed: links.length, removed, conflicts, tools };
+  return { name: project.name, status: "installed", cloned, installed: links.length, removed, conflicts, tools };
 }
 
 /** Install the selected team capability set from a Saber root into its nested business repositories. */
 export async function setupWorkspace(root: string, dependencies: SetupDependencies = {}): Promise<SetupResult> {
+  const bootstrap = await bootstrapWorkspace(root, dependencies.assetsRoot);
   const config = await (dependencies.loadConfig ?? loadSaberConfig)(root);
+  await ensureKnowledgeDirectories(root, config.projects.map((project) => project.name));
   const sync = dependencies.syncSkills ?? syncUpstreamSkills;
   const synced = await sync(root, config.skills.source, config.skills.include);
-  const projects = await Promise.all(config.projects.map((project) => setupProject(root, config, synced.cacheDirectory, project)));
-  return { source: config.skills.source, skills: [...config.skills.include, ...teamSkillIds], projects };
+  const cloneProject = dependencies.cloneProject ?? cloneProjectRepository;
+  const projects = await Promise.all(config.projects.map((project) => setupProject(root, config, synced.cacheDirectory, project, cloneProject)));
+  return { initialized: bootstrap.initialized, source: config.skills.source, skills: [...config.skills.include, ...teamSkillIds], projects };
 }
