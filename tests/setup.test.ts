@@ -13,6 +13,7 @@ const defaultSkills = [
   "grill-me", "grilling", "tdd", "grill-with-docs", "to-spec", "to-tickets",
   "implement", "domain-modeling", "code-review",
 ];
+const ponytailSkills = ["ponytail-review", "ponytail-audit", "ponytail-debt"];
 const repositoryRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 
 type FixtureProject = string | { name: string; repository?: string };
@@ -20,6 +21,10 @@ type FixtureProject = string | { name: string; repository?: string };
 async function writeSkill(root: string, id: string): Promise<void> {
   await mkdir(join(root, id), { recursive: true });
   await writeFile(join(root, id, "SKILL.md"), `---\nname: ${id}\n---\n# ${id}\n`, "utf8");
+  if (id === "loop") {
+    await mkdir(join(root, id, "hooks"), { recursive: true });
+    await writeFile(join(root, id, "hooks", "codex-hooks.json"), "{}\n", "utf8");
+  }
 }
 
 async function writeConfig(root: string, include = defaultSkills, projects: readonly FixtureProject[] = ["frontend", "backend"]): Promise<void> {
@@ -31,18 +36,20 @@ async function writeConfig(root: string, include = defaultSkills, projects: read
       ...(value.repository === undefined ? [] : [`    repository: ${value.repository}`]),
     ];
   });
-  const skillLines = include.map((id) => `    - ${id}`);
+  const skillLines = include.map((id) => `        - ${id}`);
   await writeFile(join(root, "saber.yaml"), [
-    "schemaVersion: 1", "projects:", ...projectLines, "skills:",
-    "  source: https://github.com/mattpocock/skills", "  include:", ...skillLines, "",
+    "schemaVersion: 2", "projects:", ...projectLines, "skills:", "  sources:",
+    "    - id: mattpocock", "      repository: https://github.com/mattpocock/skills", "      ref: main", "      include:", ...skillLines,
+    "loop:", "  evidenceBranch: origin/main", "  maxIterations: 8", "  maxNoProgressIterations: 3", "  maxMinutes: 60", "",
   ].join("\n"), "utf8");
 }
 
 function fixtureSync(upstream: string): UpstreamSkillSynchronizer {
-  return async (root, _source, ids) => {
+  return async (root, sources) => {
     const cache = join(root, ".saber", "managed", "skills");
     await rm(cache, { recursive: true, force: true });
     await mkdir(cache, { recursive: true });
+    const ids = sources.flatMap(({ include }) => include);
     for (const id of ids) await cp(join(upstream, id), join(cache, id), { recursive: true });
     return { cacheDirectory: cache, skills: [...ids] };
   };
@@ -59,9 +66,10 @@ test("setup projects only selected skills, preserves conflicts, and cleans remov
   const root = await mkdtemp(join(tmpdir(), "saber-vnext-setup-"));
   try {
     const upstream = join(root, "fixture-upstream");
-    for (const id of defaultSkills) await writeSkill(upstream, id);
+    for (const id of [...defaultSkills, ...ponytailSkills]) await writeSkill(upstream, id);
     await writeSkill(join(root, "skills"), "team-knowledge");
     await writeSkill(join(root, "skills"), "promote");
+    await writeSkill(join(root, "skills"), "loop");
     await writeConfig(root);
 
     const frontend = await createProject(root, "frontend", [".agents/skills", ".claude/skills"]);
@@ -87,6 +95,7 @@ test("setup projects only selected skills, preserves conflicts, and cleans remov
     assert.equal((await readlink(join(frontend, ".agents", "skills", "code-review"))).replaceAll("\\", "/"), "../../personal-code-review");
     assert.ok((await lstat(join(frontend, "CONTEXT.md"))).isSymbolicLink());
     assert.ok((await lstat(join(frontend, "docs", "adr"))).isSymbolicLink());
+    assert.ok((await lstat(join(frontend, ".codex", "hooks.json"))).isSymbolicLink());
     assert.ok((await lstat(join(frontend, ".saber", "work", "features"))).isDirectory());
     assert.ok((await lstat(join(frontend, ".opencode", "skills", "grill-me"))).isSymbolicLink());
     assert.ok((await lstat(join(backend, ".agents", "skills", "grill-me"))).isSymbolicLink());
@@ -118,6 +127,7 @@ test("setup skips an absent configured project without a repository", async () =
     await writeSkill(upstream, "grill-me");
     await writeSkill(join(root, "skills"), "team-knowledge");
     await writeSkill(join(root, "skills"), "promote");
+    await writeSkill(join(root, "skills"), "loop");
     await writeConfig(root, ["grill-me"], ["frontend", "missing"]);
     const frontend = await createProject(root, "frontend", [".agents/skills"]);
     const dependencies = { setupCommand: { syncSkills: fixtureSync(upstream) } };
@@ -134,18 +144,24 @@ test("setup initializes an arbitrary team directory, clones configured projects,
   const root = await mkdtemp(join(tmpdir(), "team-knowledge-"));
   try {
     const upstream = join(root, "fixture-upstream");
-    for (const id of defaultSkills) await writeSkill(upstream, id);
+    for (const id of [...defaultSkills, ...ponytailSkills]) await writeSkill(upstream, id);
     const dependencies = { setupCommand: { assetsRoot: repositoryRoot, syncSkills: fixtureSync(upstream) } };
 
     const initialized = await runCli(["setup"], { cwd: root, dependencies });
     assert.equal(initialized.exitCode, 0, initialized.stderr);
     assert.match(initialized.stdout, /workspace: initialized/u);
     assert.match(await readFile(join(root, "saber.yaml"), "utf8"), /projects: \[\]/u);
-    for (const directory of ["requirements", "architecture", "knowledge", "skills", "projects", ".saber"]) {
+    for (const directory of ["requirements", "architecture", "knowledge", "specs", "skills", "projects", ".saber"]) {
       assert.ok((await lstat(join(root, directory))).isDirectory(), directory);
     }
     assert.ok((await lstat(join(root, "skills", "team-knowledge", "SKILL.md"))).isFile());
     assert.ok((await lstat(join(root, "skills", "promote", "SKILL.md"))).isFile());
+    assert.ok((await lstat(join(root, "skills", "loop", "SKILL.md"))).isFile());
+
+    await writeFile(join(root, "skills", "loop", "SKILL.md"), "stale loop runtime\n", "utf8");
+    const refreshed = await runCli(["setup"], { cwd: root, dependencies });
+    assert.equal(refreshed.exitCode, 0, refreshed.stderr);
+    assert.doesNotMatch(await readFile(join(root, "skills", "loop", "SKILL.md"), "utf8"), /stale loop runtime/u);
 
     const remote = join(root, "frontend-remote.git");
     await new Promise<void>((resolvePromise, rejectPromise) => {

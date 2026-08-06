@@ -1,0 +1,75 @@
+{
+  "description": "Saber Loop continuity and evidence gates.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$(git rev-parse --show-toplevel)/.agents/skills/loop/scripts/loop-hook.mjs\"",
+            "additionalContextLimit": 2500,
+            "statusMessage": "Restoring Saber Loop"
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$(git rev-parse --show-toplevel)/.agents/skills/loop/scripts/loop-hook.mjs\"",
+            "statusMessage": "Checkpointing Saber Loop"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$(git rev-parse --show-toplevel)/.agents/skills/loop/scripts/loop-hook.mjs\"",
+            "additionalContextLimit": 1200
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash|apply_patch|Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$(git rev-parse --show-toplevel)/.agents/skills/loop/scripts/loop-hook.mjs\"",
+            "statusMessage": "Checking Saber Loop gate"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$(git rev-parse --show-toplevel)/.agents/skills/loop/scripts/loop-hook.mjs\"",
+            "statusMessage": "Recording Saber Loop evidence"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$(git rev-parse --show-toplevel)/.agents/skills/loop/scripts/loop-hook.mjs\"",
+            "statusMessage": "Validating Saber Loop completion"
+          }
+        ]
+      }
+    ]
+  }
+}

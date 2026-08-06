@@ -33,4 +33,9 @@ test("Saber-owned Skill contracts preserve read-only knowledge and local-only pr
   assert.match(promote, /clean worktree/u);
   assert.match(promote, /Never run `git fetch`, `git pull`, `git push`, `git merge`/u);
   assert.match(promote, /one local commit/u);
+
+  const loop = await readFile(join(repositoryRoot, "skills", "loop", "SKILL.md"), "utf8");
+  assert.match(loop, /exact `确认`/u);
+  assert.match(loop, /Never edit evidence under `requirements\/` or `architecture\/`/u);
+  assert.match(loop, /do not commit or push/u);
 });

@@ -34,11 +34,14 @@ try {
 
   const { stdout } = await run(binary, ["setup"], { cwd: workspace });
   assert.match(stdout, /Saber setup complete/u);
-  assert.match(stdout, /frontend: 35 managed links/u);
+  assert.match(stdout, /frontend: 48 managed links/u);
   await access(join(workspace, ".saber", "managed", "manifest.json"));
   assert.ok((await lstat(join(project, ".agents", "skills", "grill-me"))).isSymbolicLink());
+  assert.ok((await lstat(join(project, ".agents", "skills", "loop"))).isSymbolicLink());
+  assert.ok((await lstat(join(project, ".agents", "skills", "ponytail-review"))).isSymbolicLink());
   assert.ok((await lstat(join(project, ".agents", "skills", "team-knowledge"))).isSymbolicLink());
   assert.ok((await lstat(join(project, ".agents", "skills", "promote"))).isSymbolicLink());
+  assert.ok((await lstat(join(project, ".codex", "hooks.json"))).isSymbolicLink());
 } finally {
   await rm(workspace, { recursive: true, force: true });
 }

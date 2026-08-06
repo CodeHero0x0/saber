@@ -12,11 +12,23 @@ export type SaberProject = {
   repository?: string;
 };
 
+export type SaberSkillSource = {
+  id: string;
+  repository: string;
+  ref: string;
+  include: string[];
+};
+
 export type SaberConfig = {
-  schemaVersion: 1;
+  schemaVersion: 2;
   projects: SaberProject[];
   skills: {
-    source: string;
-    include: string[];
+    sources: SaberSkillSource[];
+  };
+  loop: {
+    evidenceBranch: string;
+    maxIterations: number;
+    maxNoProgressIterations: number;
+    maxMinutes: number;
   };
 };

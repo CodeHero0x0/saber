@@ -1,4 +1,4 @@
-schemaVersion: 1
+schemaVersion: 2
 
 projects:
   - name: frontend
@@ -7,14 +7,30 @@ projects:
     path: projects/backend
 
 skills:
-  source: https://github.com/mattpocock/skills
-  include:
-    - grill-me
-    - grilling
-    - tdd
-    - grill-with-docs
-    - to-spec
-    - to-tickets
-    - implement
-    - domain-modeling
-    - code-review
+  sources:
+    - id: mattpocock
+      repository: https://github.com/mattpocock/skills
+      ref: main
+      include:
+        - grill-me
+        - grilling
+        - tdd
+        - grill-with-docs
+        - to-spec
+        - to-tickets
+        - implement
+        - domain-modeling
+        - code-review
+    - id: ponytail
+      repository: https://github.com/DietrichGebert/ponytail
+      ref: v4.8.4
+      include:
+        - ponytail-review
+        - ponytail-audit
+        - ponytail-debt
+
+loop:
+  evidenceBranch: origin/main
+  maxIterations: 8
+  maxNoProgressIterations: 3
+  maxMinutes: 60

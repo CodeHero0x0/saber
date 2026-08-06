@@ -4,6 +4,7 @@ import { cp, mkdir, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { SaberError } from "./errors.js";
+import type { SaberSkillSource } from "./types.js";
 
 export type UpstreamSkillSyncResult = {
   cacheDirectory: string;
@@ -12,20 +13,19 @@ export type UpstreamSkillSyncResult = {
 
 export type UpstreamSkillSynchronizer = (
   root: string,
-  source: string,
-  skillIds: readonly string[],
+  sources: readonly SaberSkillSource[],
 ) => Promise<UpstreamSkillSyncResult>;
 
-async function runGitClone(source: string, destination: string, cwd: string): Promise<void> {
+async function runGitClone(source: SaberSkillSource, destination: string, cwd: string): Promise<void> {
   await new Promise<void>((resolvePromise, rejectPromise) => {
-    const child = spawn("git", ["clone", "--depth", "1", "--branch", "main", source, destination], {
+    const child = spawn("git", ["clone", "--depth", "1", "--branch", source.ref, source.repository, destination], {
       cwd,
       stdio: "ignore",
     });
     child.once("error", () => rejectPromise(new SaberError("could not start git while updating upstream skills", 1)));
     child.once("close", (code) => {
       if (code === 0) resolvePromise();
-      else rejectPromise(new SaberError("could not update upstream skills from main", 1));
+      else rejectPromise(new SaberError(`could not update skill source ${source.id} at ${source.ref}`, 1));
     });
   });
 }
@@ -47,38 +47,45 @@ async function discoverSkillDirectories(root: string, found = new Map<string, st
   return found;
 }
 
-/** Clone the current upstream main branch, then retain only the configured skill folders. */
-export const syncUpstreamSkills: UpstreamSkillSynchronizer = async (root, source, skillIds) => {
+/** Clone each configured source, then retain only an unambiguous, collision-free skill set. */
+export const syncUpstreamSkills: UpstreamSkillSynchronizer = async (root, sources) => {
   const managedRoot = join(root, ".saber", "managed");
   const cacheDirectory = join(managedRoot, "skills");
   const temporaryDirectory = join(managedRoot, `.upstream-${randomUUID()}`);
-  const checkoutDirectory = join(temporaryDirectory, "source");
+  const stagedCache = join(temporaryDirectory, "skills");
+  const skillIds = sources.flatMap(({ include }) => include);
 
   await mkdir(managedRoot, { recursive: true });
   if (skillIds.length === 0) {
     await rm(cacheDirectory, { recursive: true, force: true });
     await mkdir(cacheDirectory, { recursive: true });
-    await writeFile(join(managedRoot, "manifest.json"), `${JSON.stringify({ source, skills: [] }, null, 2)}\n`, "utf8");
+    await writeFile(join(managedRoot, "manifest.json"), `${JSON.stringify({ sources: [], skills: [] }, null, 2)}\n`, "utf8");
     return { cacheDirectory, skills: [] };
   }
 
   try {
-    await runGitClone(source, checkoutDirectory, root);
-    const catalog = await discoverSkillDirectories(join(checkoutDirectory, "skills"));
-    const selected = skillIds.map((id) => {
-      const matches = catalog.get(id) ?? [];
-      if (matches.length !== 1) {
-        throw new SaberError(`upstream main does not contain one unambiguous skill named ${id}`, 2);
+    await mkdir(stagedCache, { recursive: true });
+    const selected = new Map<string, { source: SaberSkillSource; directory: string }>();
+    for (const source of sources) {
+      const checkoutDirectory = join(temporaryDirectory, source.id);
+      await runGitClone(source, checkoutDirectory, root);
+      const catalog = await discoverSkillDirectories(join(checkoutDirectory, "skills"));
+      for (const id of source.include) {
+        const matches = catalog.get(id) ?? [];
+        if (matches.length !== 1) {
+          throw new SaberError(`skill source ${source.id} at ${source.ref} does not contain one unambiguous skill named ${id}`, 2);
+        }
+        if (selected.has(id)) throw new SaberError(`skill ${id} is selected from more than one source`, 2);
+        selected.set(id, { source, directory: matches[0]! });
       }
-      return { id, directory: matches[0]! };
-    });
+    }
 
+    for (const [id, skill] of selected) await cp(skill.directory, join(stagedCache, id), { recursive: true });
     await rm(cacheDirectory, { recursive: true, force: true });
-    await mkdir(cacheDirectory, { recursive: true });
-    for (const skill of selected) await cp(skill.directory, join(cacheDirectory, skill.id), { recursive: true });
+    await cp(stagedCache, cacheDirectory, { recursive: true });
     await writeFile(
       join(managedRoot, "manifest.json"),
-      `${JSON.stringify({ source, skills: skillIds }, null, 2)}\n`,
+      `${JSON.stringify({ sources: sources.map(({ id, repository, ref, include }) => ({ id, repository, ref, include })), skills: skillIds }, null, 2)}\n`,
       "utf8",
     );
     return { cacheDirectory, skills: [...skillIds] };

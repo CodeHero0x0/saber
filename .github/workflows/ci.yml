@@ -39,5 +39,8 @@ jobs:
           )
           test -f "$workspace/.saber/managed/manifest.json"
           test -L "$workspace/projects/frontend/.agents/skills/grill-me"
+          test -L "$workspace/projects/frontend/.agents/skills/loop"
+          test -L "$workspace/projects/frontend/.agents/skills/ponytail-review"
           test -L "$workspace/projects/frontend/.agents/skills/team-knowledge"
           test -L "$workspace/projects/frontend/.agents/skills/promote"
+          test -L "$workspace/projects/frontend/.codex/hooks.json"

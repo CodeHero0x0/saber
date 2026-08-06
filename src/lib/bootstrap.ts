@@ -1,4 +1,4 @@
-import { cp, lstat, mkdir, realpath, writeFile } from "node:fs/promises";
+import { cp, lstat, mkdir, realpath, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 
 import { SaberError } from "./errors.js";
@@ -16,7 +16,7 @@ const defaultSkills = [
 ];
 
 const defaultConfig = [
-  "schemaVersion: 1",
+  "schemaVersion: 2",
   "",
   "projects: []",
   "# Add a repository, then run saber setup again:",
@@ -25,20 +25,39 @@ const defaultConfig = [
   "#   repository: git@github.com:your-org/frontend.git",
   "",
   "skills:",
-  "  source: https://github.com/mattpocock/skills",
-  "  include:",
-  ...defaultSkills.map((id) => `    - ${id}`),
+  "  sources:",
+  "    - id: mattpocock",
+  "      repository: https://github.com/mattpocock/skills",
+  "      ref: main",
+  "      include:",
+  ...defaultSkills.map((id) => `        - ${id}`),
+  "    - id: ponytail",
+  "      repository: https://github.com/DietrichGebert/ponytail",
+  "      ref: v4.8.4",
+  "      include:",
+  "        - ponytail-review",
+  "        - ponytail-audit",
+  "        - ponytail-debt",
+  "",
+  "loop:",
+  "  evidenceBranch: origin/main",
+  "  maxIterations: 8",
+  "  maxNoProgressIterations: 3",
+  "  maxMinutes: 60",
   "",
 ].join("\n");
 
 const directoryReadmes = new Map<string, string>([
   ["requirements", "# Requirements\n\n只保存跨仓或长期业务需求。\n"],
+  ["requirements/stories", "# Stories\n\n由 BA 提交并推送的业务需求证据。\n"],
   ["architecture", "# Architecture\n\n只保存系统边界、跨仓契约和长期架构决策。\n"],
+  ["architecture/designs", "# Technical Designs\n\n由架构师或 TL 提交并推送的技术设计证据。\n"],
   ["knowledge", "# Knowledge\n\n只保存当前、可复用且有来源证据的事实。\n"],
+  ["specs", "# Member Specs\n\n按需求与成员保存经人工确认的实施 Spec、Tickets、决策和结果。\n"],
 ]);
 
-const rootDirectories = ["requirements", "architecture", "knowledge", "skills", "projects", ".saber"];
-const teamSkillIds = ["team-knowledge", "promote"];
+const rootDirectories = ["requirements/stories", "architecture/designs", "knowledge", "specs", "skills", "projects", ".saber"];
+const teamSkillIds = ["team-knowledge", "promote", "loop"];
 
 export type WorkspaceBootstrapResult = {
   initialized: boolean;
@@ -63,17 +82,20 @@ async function bundledRoot(explicitRoot: string | undefined): Promise<string> {
 }
 
 async function installTeamSkills(root: string, assetsRoot: string | undefined): Promise<void> {
-  const missing = await Promise.all(teamSkillIds.map(async (id) => ({ id, missing: !(await exists(join(root, "skills", id))) })));
-  if (!missing.some((skill) => skill.missing)) return;
-
   const sourceRoot = await bundledRoot(assetsRoot);
-  for (const { id, missing: isMissing } of missing) {
-    if (!isMissing) continue;
+  for (const id of teamSkillIds) {
     const source = join(sourceRoot, "skills", id);
     if (!(await exists(join(source, "SKILL.md")))) {
       throw new SaberError(`bundled team skill ${id} is missing`, 1);
     }
-    await cp(source, join(root, "skills", id), { recursive: true });
+    const destination = join(root, "skills", id);
+    const isManagedRuntime = id === "loop";
+    if (!isManagedRuntime && await exists(destination)) continue;
+    const sourcePath = await realpath(source);
+    const destinationPath = await realpath(destination).catch(() => undefined);
+    if (sourcePath === destinationPath) continue;
+    if (isManagedRuntime) await rm(destination, { recursive: true, force: true });
+    await cp(source, destination, { recursive: true });
   }
 }
 

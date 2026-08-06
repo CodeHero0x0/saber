@@ -1,0 +1,4 @@
+interface:
+  display_name: "Saber Loop"
+  short_description: "Deliver approved team requirements with human gates"
+  default_prompt: "Use $loop to complete a team requirement through approved specs, tickets, implementation, and verification."

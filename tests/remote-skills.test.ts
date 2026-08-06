@@ -27,7 +27,7 @@ test("upstream sync takes only selected skill folders from main", async () => {
     await git(upstream, ["add", "."]);
     await git(upstream, ["-c", "user.name=Saber Test", "-c", "user.email=saber@example.test", "commit", "-m", "fixture"]);
 
-    const result = await syncUpstreamSkills(root, upstream, ["tdd"]);
+    const result = await syncUpstreamSkills(root, [{ id: "fixture", repository: upstream, ref: "main", include: ["tdd"] }]);
     assert.deepEqual(result.skills, ["tdd"]);
     assert.equal((await readFile(join(result.cacheDirectory, "tdd", "SKILL.md"), "utf8")).replaceAll("\r\n", "\n"), "# tdd\n");
     assert.equal((await readFile(join(result.cacheDirectory, "tdd", "reference.md"), "utf8")).replaceAll("\r\n", "\n"), "needed asset\n");

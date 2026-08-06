@@ -24,7 +24,7 @@ export type ProjectSetupReport = {
 
 export type SetupResult = {
   initialized: boolean;
-  source: string;
+  sources: string[];
   skills: string[];
   projects: ProjectSetupReport[];
 };
@@ -38,7 +38,7 @@ export type SetupDependencies = {
   assetsRoot?: string;
 };
 
-const teamSkillIds = ["team-knowledge", "promote"] as const;
+const teamSkillIds = ["team-knowledge", "promote", "loop"] as const;
 const manifestRelativePath = ".saber/setup-manifest.json";
 const markerStart = "# >>> saber managed paths >>>";
 const markerEnd = "# <<< saber managed paths <<<";
@@ -197,7 +197,7 @@ async function setupProject(
   const previous = await readManifest(projectRoot);
   const previousTargets = new Map(previous.links.map((link) => [link.path, link.target]));
   const sources = new Map<string, string>();
-  for (const id of config.skills.include) sources.set(id, join(cacheDirectory, id));
+  for (const id of config.skills.sources.flatMap(({ include }) => include)) sources.set(id, join(cacheDirectory, id));
   for (const id of teamSkillIds) sources.set(id, await assertTeamSkill(root, id));
   for (const [id, source] of sources) {
     if (!(await existsDirectory(source))) throw new SaberError(`managed skill source ${id} is missing`, 1);
@@ -212,6 +212,7 @@ async function setupProject(
   }
   desiredPaths.add("CONTEXT.md");
   desiredPaths.add("docs/adr");
+  desiredPaths.add(".codex/hooks.json");
 
   const removed = await removeStaleLinks(projectRoot, previous.links, desiredPaths);
   const links: ManagedLink[] = [];
@@ -231,10 +232,13 @@ async function setupProject(
   await mkdir(join(domainRoot, "adr"), { recursive: true });
   const context = await managedLink(projectRoot, "CONTEXT.md", join(domainRoot, "CONTEXT.md"), "file", previousTargets);
   const adr = await managedLink(projectRoot, "docs/adr", join(domainRoot, "adr"), "dir", previousTargets);
+  const codexHooks = await managedLink(projectRoot, ".codex/hooks.json", join(root, "skills", "loop", "hooks", "codex-hooks.json"), "file", previousTargets);
   if (context.link !== undefined) links.push(context.link);
   if (adr.link !== undefined) links.push(adr.link);
+  if (codexHooks.link !== undefined) links.push(codexHooks.link);
   if (context.conflict !== undefined) conflicts.push(context.conflict);
   if (adr.conflict !== undefined) conflicts.push(adr.conflict);
+  if (codexHooks.conflict !== undefined) conflicts.push(codexHooks.conflict);
 
   await mkdir(join(projectRoot, ".saber"), { recursive: true });
   await writeFile(join(projectRoot, manifestRelativePath), `${JSON.stringify({ schemaVersion: 1, links }, null, 2)}\n`, "utf8");
@@ -253,8 +257,13 @@ export async function setupWorkspace(root: string, dependencies: SetupDependenci
   const config = await (dependencies.loadConfig ?? loadSaberConfig)(root);
   await ensureKnowledgeDirectories(root, config.projects.map((project) => project.name));
   const sync = dependencies.syncSkills ?? syncUpstreamSkills;
-  const synced = await sync(root, config.skills.source, config.skills.include);
+  const synced = await sync(root, config.skills.sources);
   const cloneProject = dependencies.cloneProject ?? cloneProjectRepository;
   const projects = await Promise.all(config.projects.map((project) => setupProject(root, config, synced.cacheDirectory, project, cloneProject)));
-  return { initialized: bootstrap.initialized, source: config.skills.source, skills: [...config.skills.include, ...teamSkillIds], projects };
+  return {
+    initialized: bootstrap.initialized,
+    sources: config.skills.sources.map(({ id }) => id),
+    skills: [...config.skills.sources.flatMap(({ include }) => include), ...teamSkillIds],
+    projects,
+  };
 }
